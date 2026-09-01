@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sonoscribe</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <div class="brand">
+        <span class="brand-mark">S</span>
+        <div>
+          <strong>Sonoscribe</strong>
+          <span>Local command library</span>
+        </div>
+      </div>
+      <nav>
+        <button type="button" data-view="overview" class="active">Overview</button>
+        <button type="button" data-view="commands">Commands</button>
+        <button type="button" data-view="routines">Routines</button>
+      </nav>
+      <p class="hint">Hold <kbd>Fn</kbd> to dictate. Hold <kbd>Fn</kbd>+<kbd>⌘</kbd> for a command. Say <em>routine</em> plus a name to run a sequence.</p>
+    </aside>
+    <main>
+      <section id="view-overview" class="view">
+        <header class="page-head">
+          <h1>Overview</h1>
+          <p>Words you paste, commands you run, all on this Mac.</p>
+        </header>
+        <div class="stat-grid">
+          <article class="stat">
+            <span class="stat-label">Average WPM</span>
+            <strong id="stat-wpm">—</strong>
+          </article>
+          <article class="stat">
+            <span class="stat-label">Command operations</span>
+            <strong id="stat-commands">0</strong>
+          </article>
+          <article class="stat">
+            <span class="stat-label">Routines run</span>
+            <strong id="stat-routines">0</strong>
+          </article>
+          <article class="stat">
+            <span class="stat-label">Words dictated</span>
+            <strong id="stat-words">0</strong>
+          </article>
+        </div>
+        <h2>Recent activity</h2>
+        <ul id="activity" class="activity"></ul>
+      </section>
+
+      <section id="view-commands" class="view hidden">
+        <header class="page-head">
+          <div>
+            <h1>Commands</h1>
+            <p>Exact spoken phrases. Each command does one action.</p>
+          </div>
+          <button type="button" class="primary" id="add-command">Add command</button>
+        </header>
+        <div id="command-groups"></div>
+      </section>
+
+      <section id="view-routines" class="view hidden">
+        <header class="page-head">
+          <div>
+            <h1>Routines</h1>
+            <p>Say <em>routine</em> and the name. Steps run in order, with optional delay before each.</p>
+          </div>
+          <button type="button" class="primary" id="add-routine">Add routine</button>
+        </header>
+        <div id="routine-list"></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="editor">
+    <form method="dialog" id="editor-form">
+      <h2 id="editor-title">Command</h2>
+      <div id="editor-body"></div>
+      <div class="dialog-actions">
+        <button type="button" class="danger hidden" id="editor-delete">Delete</button>
+        <span class="grow"></span>
+        <button type="button" id="editor-cancel">Cancel</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+  <div id="toast" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>
