@@ -1,6 +1,6 @@
 [project]
 name = "sonoscribe"
-version = "0.1.0"
+version = "1.0.0"
 description = "Hold Fn to dictate with on-device Whisper. Hold Cmd with Fn for commands."
 readme = "README.md"
 license = { file = "LICENSE" }
