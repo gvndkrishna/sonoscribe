@@ -40,6 +40,10 @@ open dist/Sonoscribe.app
 
 A source run is a different TCC identity than `Sonoscribe.app`. Grant permissions to whichever you launched.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [DESIGN.md](DESIGN.md).
+
 ## License
 
 [GPL-3.0-only](LICENSE). If you distribute a product that includes this code, that entire product must be open source under GPL-3.0-only, including further derivatives.
