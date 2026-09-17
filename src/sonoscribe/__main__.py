@@ -18,8 +18,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--model",
         choices=["large-v3-turbo", "small", "base"],
-        default="large-v3-turbo",
-        help="mlx-whisper model (default: large-v3-turbo)",
+        default=None,
+        help="mlx-whisper model (overrides Settings for this launch)",
     )
     parser.add_argument(
         "--no-fillers",
@@ -32,6 +32,11 @@ def main(argv: list[str] | None = None) -> None:
         help="Copy the transcript instead of pasting into the focused app.",
     )
     parser.add_argument(
+        "--model-path",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--worker",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -41,7 +46,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.worker:
         from sonoscribe.worker import run_worker
 
-        raise SystemExit(run_worker(args.model))
+        raise SystemExit(run_worker(args.model, args.model_path))
 
     from sonoscribe.runtime import attach_log_if_needed
 
@@ -50,10 +55,15 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Logging to {log_path}", flush=True)
 
     from sonoscribe.app import App
+    from sonoscribe.settings import resolve_model, update_settings
+
+    model = resolve_model(args.model)
+    if args.model:
+        update_settings({"model": model})
 
     raise SystemExit(
         App(
-            model=args.model,
+            model=model,
             remove_fillers=not args.no_fillers,
             copy_only=args.copy_only,
         ).run()

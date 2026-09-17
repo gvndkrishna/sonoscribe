@@ -37,6 +37,9 @@ _kAudioObjectPropertyScopeOutput = _fourcc("outp")
 _kAudioObjectPropertyElementMain = 0
 _NO_ERROR = 0
 _ENV_AUDIO_STATE = "SONOSCRIBE_AUDIO_STATE"
+# One macOS volume notch is 1/16. Never treat that leftover as the real level.
+_MIN_RESTORE_VOLUME = 0.12
+_FALLBACK_VOLUME = 0.5
 
 
 class _Address(Structure):
@@ -167,13 +170,46 @@ def _device_name(core, device: int) -> str:
 
 
 def has_bluetooth_output() -> bool:
+    """True when the default output is a Bluetooth device (media keys go there)."""
     core = _core()
-    for device in _all_devices(core):
-        transport = _transport(core, device)
-        if transport.startswith("bt") or transport == "blue":
-            if _read_volume(core, device) is not None:
-                return True
-    return False
+    try:
+        device = _default_output_device(core)
+    except RuntimeError:
+        return False
+    transport = _transport(core, device)
+    return transport.startswith("bt") or transport == "blue"
+
+
+def _is_builtin_output(core, device: int) -> bool:
+    return _transport(core, device) == "bltn" and _read_volume(core, device) is not None
+
+
+def _device_keys(core, device: int) -> list[str]:
+    keys = [str(device)]
+    try:
+        name = _device_name(core, device)
+    except Exception:
+        return keys
+    if name and not name.startswith("device "):
+        keys.append(name)
+    return keys
+
+
+def _usable_volume(value: float) -> float | None:
+    if value < _MIN_RESTORE_VOLUME:
+        return None
+    return max(_MIN_RESTORE_VOLUME, min(1.0, value))
+
+
+def _lookup_saved_volume(saved: dict[str, float], core, device: int) -> float | None:
+    for key in _device_keys(core, device):
+        raw = saved.get(key)
+        if raw is None:
+            continue
+        usable = _usable_volume(raw)
+        if usable is not None:
+            return usable
+    return None
 
 
 def _get(core, device: int, selector: int, element: int, ctype, scope: int | None = None):
@@ -266,16 +302,18 @@ def _load_saved_volumes() -> dict[str, float]:
                 value = float(raw)
             except (TypeError, ValueError):
                 continue
-            if value > 0:
-                out[str(key)] = max(0.05, min(1.0, value))
+            usable = _usable_volume(value)
+            if usable is not None:
+                out[str(key)] = usable
         return out
     try:
         value = float(data.get("volume"))
     except (TypeError, ValueError):
         return {}
-    if value <= 0:
+    usable = _usable_volume(value)
+    if usable is None:
         return {}
-    return {"default": max(0.05, min(1.0, value))}
+    return {"default": usable}
 
 
 def _save_volumes(devices: dict[str, float]) -> None:
@@ -289,22 +327,26 @@ def set_output_muted(muted: bool) -> None:
     core = _core()
     devices = _all_devices(core)
     if muted:
-        saved: dict[str, float] = {}
+        saved = _load_saved_volumes()
+        newly: dict[str, float] = {}
         silenced = 0
         for device in devices:
             current = _read_volume(core, device)
-            if current is not None and current > 0.01:
-                saved[str(device)] = current
+            usable = _usable_volume(current) if current is not None else None
+            if usable is not None:
+                for key in _device_keys(core, device):
+                    newly[key] = usable
             if current is not None and _write_volume(core, device, 0.0):
                 silenced += 1
-        if saved:
+        if newly:
+            saved.update(newly)
             _save_volumes(saved)
         _write_mute_flags(core, True)
         try:
             names = ", ".join(
                 _device_name(core, device)
                 for device in devices
-                if str(device) in saved or _read_volume(core, device) is not None
+                if _read_volume(core, device) is not None
             )
         except Exception:
             names = ""
@@ -314,9 +356,13 @@ def set_output_muted(muted: bool) -> None:
     _write_mute_flags(core, False)
     restored = 0
     for device in devices:
-        scalar = saved.get(str(device))
+        if _read_volume(core, device) is None:
+            continue
+        scalar = _lookup_saved_volume(saved, core, device)
         if scalar is None and len(saved) == 1 and "default" in saved:
-            scalar = saved["default"]
+            scalar = _usable_volume(saved["default"])
+        if scalar is None and _is_builtin_output(core, device):
+            scalar = _FALLBACK_VOLUME
         if scalar is None:
             continue
         if _write_volume(core, device, scalar):
@@ -334,6 +380,10 @@ def adjust_output_volume(delta: float) -> None:
     nxt = max(0.0, min(1.0, current + delta))
     if not _write_volume(core, device, nxt):
         raise RuntimeError("Could not set output volume.")
-    if nxt > 0.01:
-        _save_volumes({str(device): nxt})
+    usable = _usable_volume(nxt)
+    if usable is not None:
+        saved = _load_saved_volumes()
+        for key in _device_keys(core, device):
+            saved[key] = usable
+        _save_volumes(saved)
         _write_mute_flags(core, False)

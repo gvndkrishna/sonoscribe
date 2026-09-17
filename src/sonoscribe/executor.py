@@ -12,6 +12,7 @@ from Quartz import (
     CGEventPost,
     CGEventSetFlags,
     CGEventSourceCreate,
+    kCGEventFlagMaskAlternate,
     kCGEventFlagMaskCommand,
     kCGEventFlagMaskControl,
     kCGEventFlagMaskShift,
@@ -37,11 +38,15 @@ from sonoscribe.audio_device import (
     set_output_muted,
 )
 from sonoscribe.inserter import (
+    insert,
     press_backspace,
     press_option_backspace,
     press_return,
     press_undo,
 )
+from sonoscribe.keys import format_keys
+from sonoscribe.scripts import ScriptError, looks_like_bundle_id, run_script
+from sonoscribe.slots import fill
 
 _VK_ANSI_Q = 0x0C
 _VK_ANSI_3 = 0x14
@@ -51,12 +56,17 @@ _NONCOALESCED = 0x000008
 # NX system-defined media keys.
 _NX_SOUND_UP = 0
 _NX_SOUND_DOWN = 1
-_NX_MUTE = 7
 _NX_PLAY = 16
 _NX_NEXT = 17
 _NX_PREVIOUS = 18
 _NS_SYSTEM_DEFINED = 14
 _BT_VOLUME_STEPS = 20
+_MOD_FLAGS = {
+    "command": kCGEventFlagMaskCommand,
+    "shift": kCGEventFlagMaskShift,
+    "option": kCGEventFlagMaskAlternate,
+    "control": kCGEventFlagMaskControl,
+}
 
 
 class KeyboardState:
@@ -64,23 +74,57 @@ class KeyboardState:
         self.last_inserted = ""
 
 
-def run_command(command: dict[str, Any], keyboard: KeyboardState) -> str:
+def run_command(
+    command: dict[str, Any],
+    keyboard: KeyboardState,
+    bindings: dict[str, str] | None = None,
+    variables: dict[str, str] | None = None,
+) -> str:
+    bound = bindings or {}
+    names = variables or {}
     cmd_type = command.get("type")
     if cmd_type == "keyboard":
+        keys = command.get("keys") or []
+        if keys:
+            _play_keys(keys)
+            return command.get("name") or format_keys(keys) or "Keyboard"
         return _run_keyboard(str(command.get("action") or ""), keyboard)
     if cmd_type == "website":
-        _open([str(command.get("url") or "")])
+        url = fill(str(command.get("url") or ""), bound, names)
+        _open([url])
         return command.get("name") or "Website"
     if cmd_type == "app":
-        app = str(command.get("app") or "")
-        _open(["-a", app])
-        return command.get("name") or app
+        bundle_id = fill(str(command.get("bundle_id") or "").strip(), bound, names)
+        app = fill(str(command.get("app") or "").strip(), bound, names)
+        target = bundle_id or app
+        if looks_like_bundle_id(target):
+            _open(["-b", target])
+        elif target:
+            _open(["-a", target])
+        return command.get("name") or target
     if cmd_type == "file":
-        path = str(command.get("path") or "")
+        path = fill(str(command.get("path") or ""), bound, names)
         _open([path])
         return command.get("name") or path
     if cmd_type == "system":
         return _run_system(str(command.get("action") or ""))
+    if cmd_type == "script":
+        try:
+            run_script(
+                str(command.get("runtime") or "bash"),
+                body=fill(str(command.get("body") or ""), bound, names),
+                path=fill(str(command.get("path") or ""), bound, names),
+            )
+        except ScriptError as exc:
+            raise ValueError(str(exc)) from exc
+        return command.get("name") or "Script"
+    if cmd_type == "text":
+        template = str(command.get("text") or "").strip() or "{*}"
+        text = fill(template, bound, names)
+        insert(text)
+        if text.strip():
+            keyboard.last_inserted = text
+        return command.get("name") or text or "Text"
     raise ValueError(f"Unknown command type {cmd_type!r}")
 
 
@@ -91,8 +135,16 @@ def run_routine_steps(
     log: Callable[[str], None],
     on_command: Callable[[dict[str, Any], str], None] | None = None,
     invoke: Callable[[dict[str, Any], KeyboardState], str] | None = None,
+    bindings: dict[str, str] | None = None,
+    variables: dict[str, str] | None = None,
 ) -> None:
-    runner = invoke or run_command
+    bound = bindings or {}
+    names = variables or {}
+
+    def default_runner(command: dict[str, Any], state: KeyboardState) -> str:
+        return run_command(command, state, bindings=bound, variables=names)
+
+    runner = invoke or default_runner
     steps = routine.get("steps") or []
     for step in steps:
         delay_ms = int(step.get("delay_ms") or 0)
@@ -155,20 +207,22 @@ def _run_system(action: str) -> str:
     }
     if action == "mute":
         set_output_muted(True)
-        # Sony and other BT headsets ignore HAL volume; they follow the
-        # keyboard mute / volume keys over AVRCP.
-        _media_key(_NX_MUTE)
+        # Sony and other BT headsets ignore HAL volume; they follow
+        # keyboard volume keys over AVRCP. Do not send NX_MUTE — it
+        # toggles and remutes MacBook speakers when they are default.
         if has_bluetooth_output():
             for _ in range(_BT_VOLUME_STEPS):
                 _media_key(_NX_SOUND_DOWN)
                 time.sleep(0.02)
     elif action == "unmute":
-        _media_key(_NX_MUTE)
+        # Restore built-in speaker HAL volume first. Media keys hit the
+        # default output only; spraying them first can leave speakers at
+        # one leftover notch, then overwrite the saved level with that.
+        set_output_muted(False)
         if has_bluetooth_output():
             for _ in range(_BT_VOLUME_STEPS):
                 _media_key(_NX_SOUND_UP)
                 time.sleep(0.02)
-        set_output_muted(False)
     elif action == "volume_up":
         adjust_output_volume(0.12)
     elif action == "volume_down":
@@ -198,6 +252,15 @@ def _run_system(action: str) -> str:
     else:
         raise ValueError(f"Unknown system action {action!r}")
     return labels.get(action, action)
+
+
+def _play_keys(steps: list[dict[str, Any]]) -> None:
+    for step in steps:
+        flags = _NONCOALESCED
+        for mod in step.get("mods") or []:
+            flags |= _MOD_FLAGS.get(str(mod), 0)
+        _post_key(int(step["vk"]), flags)
+        time.sleep(0.02)
 
 
 def _post_key(keycode: int, flags: int) -> None:

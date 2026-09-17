@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light" data-accent="amber" data-reduce-motion="false">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -8,86 +8,359 @@
 </head>
 <body>
   <div class="shell">
-    <aside class="rail">
-      <div class="brand">
-        <span class="brand-mark">S</span>
-        <div>
-          <strong>Sonoscribe</strong>
-          <span>Local command library</span>
-        </div>
-      </div>
+    <header class="masthead glass glass-down">
+      <div class="glass-fill" aria-hidden="true"></div>
+      <div class="wordmark">sonoscribe <span>ss–1</span></div>
       <nav>
-        <button type="button" data-view="overview" class="active">Overview</button>
-        <button type="button" data-view="commands">Commands</button>
-        <button type="button" data-view="routines">Routines</button>
+        <button type="button" data-view="overview" class="active">overview</button>
+        <button type="button" data-view="commands">commands</button>
+        <button type="button" data-view="routines">routines</button>
+        <button type="button" data-view="voice">voice</button>
       </nav>
-      <p class="hint">Hold <kbd>Fn</kbd> to dictate. Hold <kbd>Fn</kbd>+<kbd>⌘</kbd> for a command. Say <em>routine</em> plus a name to run a sequence.</p>
-    </aside>
+      <p class="hint">hold <kbd>fn</kbd> to dictate. hold <kbd>fn</kbd>+<kbd>⌘</kbd> for a command.</p>
+      <button type="button" id="open-settings" class="text-btn" aria-label="Settings">settings<span class="settings-mark hidden" aria-hidden="true">*</span></button>
+    </header>
     <main>
       <section id="view-overview" class="view">
         <header class="page-head">
-          <h1>Overview</h1>
-          <p>Words you paste, commands you run, all on this Mac.</p>
+          <div>
+            <p class="unit">01 / this mac</p>
+            <h1>overview</h1>
+          </div>
+          <div class="page-actions">
+            <div class="chart-add-wrap">
+              <button type="button" class="icon-btn" id="add-chart" aria-label="Add graph">+</button>
+              <div id="chart-add-menu" class="chart-add-menu glass glass-box hidden" role="menu">
+                <div class="glass-fill" aria-hidden="true"></div>
+                <div id="chart-add-items"></div>
+              </div>
+            </div>
+            <button type="button" class="icon-btn" id="refresh-stats" aria-label="Refresh stats">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8a5 5 0 0 1 8.3-3.7L13 6M13 8a5 5 0 0 1-8.3 3.7L3 10"/><path d="M13 2.5V6h-3.5M3 13.5V10h3.5"/></svg>
+            </button>
+            <label class="stats-device hidden" id="stats-device-wrap">
+              <span>device</span>
+              <select id="stats-device"></select>
+            </label>
+          </div>
         </header>
-        <div class="stat-grid">
-          <article class="stat">
-            <span class="stat-label">Average WPM</span>
-            <strong id="stat-wpm">—</strong>
-          </article>
-          <article class="stat">
-            <span class="stat-label">Command operations</span>
-            <strong id="stat-commands">0</strong>
-          </article>
-          <article class="stat">
-            <span class="stat-label">Routines run</span>
-            <strong id="stat-routines">0</strong>
-          </article>
-          <article class="stat">
-            <span class="stat-label">Words dictated</span>
-            <strong id="stat-words">0</strong>
-          </article>
+        <div class="instrument">
+          <div class="instrument-rail">
+            <span>ss–meter</span>
+            <span id="instrument-scope">local</span>
+          </div>
+          <div class="stat-grid">
+            <article class="stat">
+              <span class="stat-index">01</span>
+              <span class="stat-label">average wpm</span>
+              <strong id="stat-wpm">—</strong>
+              <span class="stat-fill" aria-hidden="true"></span>
+            </article>
+            <article class="stat">
+              <span class="stat-index">02</span>
+              <span class="stat-label">commands</span>
+              <strong id="stat-commands">0</strong>
+              <span class="stat-fill" aria-hidden="true"></span>
+            </article>
+            <article class="stat">
+              <span class="stat-index">03</span>
+              <span class="stat-label">routines</span>
+              <strong id="stat-routines">0</strong>
+              <span class="stat-fill" aria-hidden="true"></span>
+            </article>
+            <article class="stat">
+              <span class="stat-index">04</span>
+              <span class="stat-label">words</span>
+              <strong id="stat-words">0</strong>
+              <span class="stat-fill" aria-hidden="true"></span>
+            </article>
+            <article class="stat hidden" id="stat-devices-wrap">
+              <span class="stat-index">05</span>
+              <span class="stat-label">devices</span>
+              <strong id="stat-devices">0</strong>
+              <span class="stat-fill" aria-hidden="true"></span>
+            </article>
+          </div>
+          <div class="usage-graph">
+            <div class="usage-head">
+              <span class="stat-label">model use</span>
+              <span id="usage-summary">—</span>
+              <div class="usage-legend" aria-hidden="true">
+                <span>less</span>
+                <i data-level="0"></i>
+                <i data-level="1"></i>
+                <i data-level="2"></i>
+                <i data-level="3"></i>
+                <i data-level="4"></i>
+                <span>more</span>
+              </div>
+            </div>
+            <div id="usage-months" class="usage-months"></div>
+            <div id="usage-grid" class="usage-grid" role="img" aria-label="Model use"></div>
+          </div>
         </div>
-        <h2>Recent activity</h2>
-        <ul id="activity" class="activity"></ul>
+        <div id="chart-grid" class="chart-grid"></div>
+        <article class="activity-card">
+          <header class="activity-head">
+            <div>
+              <span class="unit">01</span>
+              <h2>recent activity</h2>
+            </div>
+            <label class="search">
+              <span class="sr-only">Search activity</span>
+              <input id="activity-search" type="search" placeholder="search" autocomplete="off" />
+            </label>
+          </header>
+          <ul id="activity" class="activity"></ul>
+        </article>
       </section>
 
       <section id="view-commands" class="view hidden">
         <header class="page-head">
           <div>
-            <h1>Commands</h1>
-            <p>Exact spoken phrases. Each command does one action.</p>
+            <p class="unit">02 / library</p>
+            <h1>commands</h1>
           </div>
-          <button type="button" class="primary" id="add-command">Add command</button>
+          <div class="page-actions">
+            <button type="button" class="icon-btn hidden" id="reveal-commands" aria-label="Show secret commands" aria-pressed="false">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>
+            </button>
+            <button type="button" class="icon-btn" id="add-command" aria-label="Add command">+</button>
+          </div>
         </header>
+        <div class="toolbar">
+          <label class="search">
+            <span class="sr-only">Search commands</span>
+            <input id="command-search" type="search" placeholder="search" autocomplete="off" />
+          </label>
+          <div class="filters" id="command-filters">
+            <button type="button" data-filter="all" class="active">all</button>
+            <button type="button" data-filter="keyboard">keyboard</button>
+            <button type="button" data-filter="website">website</button>
+            <button type="button" data-filter="app">app</button>
+            <button type="button" data-filter="file">file</button>
+            <button type="button" data-filter="system">system</button>
+            <button type="button" data-filter="script">script</button>
+            <button type="button" data-filter="text">text</button>
+          </div>
+        </div>
         <div id="command-groups"></div>
       </section>
 
       <section id="view-routines" class="view hidden">
         <header class="page-head">
           <div>
-            <h1>Routines</h1>
-            <p>Say <em>routine</em> and the name. Steps run in order, with optional delay before each.</p>
+            <p class="unit">03 / sequences</p>
+            <h1>routines</h1>
           </div>
-          <button type="button" class="primary" id="add-routine">Add routine</button>
+          <div class="page-actions">
+            <button type="button" class="icon-btn hidden" id="reveal-routines" aria-label="Show secret routines" aria-pressed="false">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>
+            </button>
+            <button type="button" class="icon-btn" id="add-routine" aria-label="Add routine">+</button>
+          </div>
         </header>
         <div id="routine-list"></div>
+      </section>
+
+      <section id="view-voice" class="view hidden">
+        <header class="page-head">
+          <div>
+            <p class="unit">04 / voice</p>
+            <h1>voice</h1>
+          </div>
+          <div class="page-actions">
+            <button type="button" class="icon-btn hidden" id="reveal-voice" aria-label="Show secret voice variables" aria-pressed="false">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>
+            </button>
+            <button type="button" class="icon-btn" id="add-voice" aria-label="Add voice variable">+</button>
+          </div>
+        </header>
+        <div class="toolbar">
+          <label class="search">
+            <span class="sr-only">Search voice</span>
+            <input id="voice-search" type="search" placeholder="search" autocomplete="off" />
+          </label>
+        </div>
+        <div id="voice-list"></div>
       </section>
     </main>
   </div>
 
-  <dialog id="editor">
+  <dialog id="settings" class="glass glass-box">
+    <div class="glass-fill" aria-hidden="true"></div>
+    <div class="settings-shell">
+      <aside class="settings-nav" id="settings-nav">
+        <p class="unit">ss–set</p>
+        <button type="button" data-settings-pane="personalization" class="active">personalization</button>
+        <button type="button" data-settings-pane="model">model</button>
+        <button type="button" data-settings-pane="account">account</button>
+        <button type="button" data-settings-pane="sync">sync<span class="settings-mark hidden" aria-hidden="true">*</span></button>
+      </aside>
+      <div class="settings-main">
+        <section id="pane-personalization" class="settings-pane">
+          <h2>personalization</h2>
+          <div class="form-stack">
+            <div class="field">
+              <div class="field-label">theme</div>
+              <div class="field-control" id="theme-picks">
+                <button type="button" data-theme="light" class="active">light</button>
+                <button type="button" data-theme="dark">dark</button>
+              </div>
+            </div>
+            <div class="field">
+              <div class="field-label">accent</div>
+              <div class="field-control">
+                <div class="swatches" id="accent-swatches"></div>
+              </div>
+            </div>
+            <div class="field">
+              <div class="field-label">timezone</div>
+              <div class="field-control">
+                <select id="timezone-select"></select>
+              </div>
+            </div>
+            <div class="field">
+              <div class="field-label">motion</div>
+              <div class="field-control">
+                <div class="motion-switch">
+                  <button type="button" class="switch" id="reduce-motion" aria-pressed="false" aria-label="Reduce animations"><i></i></button>
+                  <span>reduce animations</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+        <section id="pane-model" class="settings-pane hidden">
+          <h2>model</h2>
+          <div class="form-stack">
+            <div class="field">
+              <div class="field-label">built-in</div>
+              <div class="field-control">
+                <div id="model-builtin" class="model-picks"></div>
+              </div>
+            </div>
+            <div class="field">
+              <div class="field-label">custom</div>
+              <div class="field-control model-stack">
+                <div id="model-custom" class="model-picks"></div>
+                <button type="button" class="icon-btn" id="add-custom-model" aria-label="Add custom model">+</button>
+                <div id="model-add-form" class="model-add-form hidden">
+                  <div class="field-row">
+                    <input id="custom-model-path" type="text" placeholder="path" autocomplete="off" />
+                    <button type="button" class="ghost" id="pick-model-path">browse</button>
+                  </div>
+                  <div class="field-row">
+                    <input id="custom-model-name" type="text" maxlength="80" placeholder="label" autocomplete="off" />
+                    <button type="button" class="ghost" id="save-custom-model">add</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="field">
+              <div class="field-label">try</div>
+              <div class="field-control">
+                <textarea id="model-test" rows="5" placeholder="hold fn to dictate" autocomplete="off"></textarea>
+                <div class="model-test-meta">
+                  <span id="model-test-hint">hold <kbd>fn</kbd></span>
+                  <button type="button" class="text-btn" id="clear-model-test">clear</button>
+                </div>
+              </div>
+            </div>
+            <p id="model-status" class="hint-line"></p>
+          </div>
+        </section>
+        <section id="pane-account" class="settings-pane hidden">
+          <h2>account</h2>
+          <div class="form-stack">
+            <div class="field">
+              <div class="field-label">privacy</div>
+              <div class="field-control">
+                <div class="motion-switch">
+                  <button type="button" class="switch" id="private-mode" aria-pressed="false" aria-label="Private mode"><i></i></button>
+                  <span>private mode</span>
+                </div>
+                <div class="motion-switch">
+                  <button type="button" class="switch" id="dashboard-lock" aria-pressed="false" aria-label="Dashboard lock"><i></i></button>
+                  <span>lock this Mac</span>
+                </div>
+                <div id="lock-fields" class="lock-fields hidden">
+                  <div id="lock-pin-fields" class="field-row">
+                    <input id="lock-pin" type="password" inputmode="numeric" maxlength="4" placeholder="PIN" autocomplete="off" />
+                    <input id="lock-pin-again" type="password" inputmode="numeric" maxlength="4" placeholder="again" autocomplete="off" />
+                  </div>
+                  <label class="lock-timeout">
+                    <span>auto-lock</span>
+                    <select id="lock-timeout"></select>
+                  </label>
+                  <div class="field-row">
+                    <button type="button" class="ghost" id="lock-save">save lock</button>
+                    <button type="button" class="ghost" id="lock-now">lock now</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="field">
+              <div class="field-label">username</div>
+              <div class="field-control"><input id="account-username" type="text" maxlength="40" placeholder="your-name" autocomplete="off" /></div>
+            </div>
+            <div class="field">
+              <div class="field-label">serial</div>
+              <div class="field-control"><input id="account-device-serial" type="text" readonly tabindex="-1" autocomplete="off" /></div>
+            </div>
+            <div class="field">
+              <div class="field-label">this mac</div>
+              <div class="field-control"><input id="account-device-name" type="text" maxlength="80" placeholder="Studio Mac" autocomplete="off" /></div>
+            </div>
+          </div>
+          <h3 class="device-heading">devices</h3>
+          <ul id="device-list" class="device-list"></ul>
+        </section>
+        <section id="pane-sync" class="settings-pane hidden">
+          <h2>sync</h2>
+          <div id="sync-body"></div>
+        </section>
+        <div class="dialog-actions">
+          <span class="grow"></span>
+          <button type="button" id="settings-close">close</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+  <dialog id="editor" class="glass glass-box">
+    <div class="glass-fill" aria-hidden="true"></div>
     <form method="dialog" id="editor-form">
-      <h2 id="editor-title">Command</h2>
+      <h2 id="editor-title">command</h2>
       <div id="editor-body"></div>
       <div class="dialog-actions">
-        <button type="button" class="danger hidden" id="editor-delete">Delete</button>
+        <button type="button" class="danger hidden" id="editor-delete">delete</button>
         <span class="grow"></span>
-        <button type="button" id="editor-cancel">Cancel</button>
-        <button type="submit" class="primary">Save</button>
+        <button type="button" id="editor-cancel">cancel</button>
+        <button type="submit" class="primary">save</button>
       </div>
     </form>
   </dialog>
-  <div id="toast" hidden></div>
+  <dialog id="lock-gate" class="lock-gate glass glass-box">
+    <div class="glass-fill" aria-hidden="true"></div>
+    <div class="lock-copy">
+      <p class="unit" id="lock-kicker">locked</p>
+      <h1 id="lock-title">sonoscribe</h1>
+      <p class="lock-hint" id="lock-hint"></p>
+      <div id="lock-pin-wrap" class="lock-pin-wrap">
+        <input id="lock-gate-pin" type="password" inputmode="numeric" maxlength="4" autocomplete="off" />
+        <button type="button" class="primary" id="lock-pin-submit">unlock</button>
+      </div>
+      <button type="button" class="ghost hidden" id="lock-cancel">cancel</button>
+    </div>
+  </dialog>
+  <div id="chart-tip" class="glass glass-box" hidden>
+    <div class="glass-fill" aria-hidden="true"></div>
+    <span class="glass-copy"></span>
+  </div>
+  <div id="toast" class="glass glass-box" hidden>
+    <div class="glass-fill" aria-hidden="true"></div>
+    <span class="glass-copy"></span>
+  </div>
   <script src="/app.js"></script>
 </body>
 </html>

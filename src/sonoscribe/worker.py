@@ -7,7 +7,7 @@ import os
 import sys
 import traceback
 
-from sonoscribe.transcriber import MODELS, resolve_model_path
+from sonoscribe.transcriber import MODELS, friendly_load_error, resolve_model_path
 
 
 def configure_tls() -> None:
@@ -26,8 +26,9 @@ def configure_tls() -> None:
         return
 
 
-def run_worker(model_key: str) -> int:
-    repo = MODELS[model_key]
+def run_worker(model_key: str | None = None, model_path: str | None = None) -> int:
+    path = str(model_path or "").strip() or None
+    key = str(model_key or "").strip()
     try:
         print("WORKER_LOADING", flush=True)
         configure_tls()
@@ -35,12 +36,16 @@ def run_worker(model_key: str) -> int:
         import mlx_whisper
         from mlx_whisper.load_models import load_model
 
-        model_dir = resolve_model_path(repo)
+        if path:
+            model_dir = path
+        else:
+            repo = MODELS[key or "large-v3-turbo"]
+            model_dir = resolve_model_path(repo)
         load_model(model_dir)
         print("WORKER_READY", flush=True)
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
-        print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}), flush=True)
+        print(json.dumps({"error": friendly_load_error(exc)}), flush=True)
         return 1
 
     import numpy as np

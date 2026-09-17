@@ -46,6 +46,8 @@ _COMMA_SPACE = re.compile(r"\s+,+")
 _LEADING_COMMAS = re.compile(r"^,+\s*")
 _MULTI_SPACE = re.compile(r"[^\S\n]{2,}")
 _TRIM_PUNCT = ",;"
+_SENTENCE_PUNCT = re.compile(r"[,?!;:…\"“”]+")
+_TRAILING_PERIOD = re.compile(r"\.(?=\s|$)")
 
 _FILLER_PATTERNS = [
     re.compile(
@@ -106,3 +108,17 @@ def process(raw: str, remove_fillers: bool = True) -> str:
     if remove_fillers:
         text = strip_fillers(text)
     return finalize(normalize_domains(text))
+
+
+def strip_auto_punctuation(text: str) -> str:
+    """Drop Whisper sentence punctuation. Keep mid-token dots (google.com)."""
+    text = _SENTENCE_PUNCT.sub("", text)
+    return _TRAILING_PERIOD.sub("", text)
+
+
+def prepare_command_text(raw: str) -> str:
+    """Words only, plus spoken dot/dash. No auto commas or sentence periods."""
+    text = strip_auto_punctuation(correct_product_name(raw))
+    text = apply_commands(text, command_mode=True)
+    text = strip_fillers(text)
+    return " ".join(text.split())

@@ -1,9 +1,11 @@
-# PyInstaller onedir spec. Do not collect_all('mlx') — that double-registers mlx.core.
+# Do not collect_all('mlx') — that double-registers mlx.core.
+import os
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 ROOT = Path(SPECPATH)
+VERSION = os.environ.get("SONOSCRIBE_VERSION", "0.1.0").removeprefix("v")
 
 hiddenimports = [
     "sonoscribe",
@@ -22,8 +24,23 @@ hiddenimports = [
     "sonoscribe.executor",
     "sonoscribe.audio_device",
     "sonoscribe.stats",
+    "sonoscribe.apps",
+    "sonoscribe.keys",
+    "sonoscribe.scripts",
+    "sonoscribe.settings",
+    "sonoscribe.profile",
+    "sonoscribe.sync",
+    "sonoscribe.sync.crypto",
+    "sonoscribe.sync.keychain",
+    "sonoscribe.sync.cli",
+    "sonoscribe.sync.service",
+    "sonoscribe.sync.merge",
     "sonoscribe.dashboard",
     "sonoscribe.dashboard.server",
+    "sonoscribe.device",
+    "sonoscribe.key_capture",
+    "sonoscribe.lock",
+    "sonoscribe.slots",
     "sonoscribe.worker",
     "mlx",
     "mlx.core",
@@ -38,6 +55,8 @@ hiddenimports = [
     "tiktoken_ext",
     "tiktoken_ext.openai_public",
     "truststore",
+    "cryptography",
+    "Security",
     "huggingface_hub",
     "AppKit",
     "Quartz",
@@ -63,6 +82,9 @@ datas += collect_data_files("mlx_whisper")
 dash_static = ROOT / "src" / "sonoscribe" / "dashboard" / "static"
 if dash_static.is_dir():
     datas.append((str(dash_static), "sonoscribe/dashboard/static"))
+license_file = ROOT / "LICENSE"
+if license_file.is_file():
+    datas.append((str(license_file), "."))
 
 try:
     import mlx
@@ -141,19 +163,20 @@ app = BUNDLE(
     name="Sonoscribe.app",
     icon=None,
     bundle_identifier="dev.sonoscribe.app",
-    version="0.1.0",
+    version=VERSION,
     codesign_identity=None,
     info_plist={
         "CFBundleName": "Sonoscribe",
         "CFBundleDisplayName": "Sonoscribe",
         "CFBundleIdentifier": "dev.sonoscribe.app",
         "CFBundlePackageType": "APPL",
-        "CFBundleShortVersionString": "0.1.0",
-        "CFBundleVersion": "0.1.0",
+        "CFBundleShortVersionString": VERSION,
+        "CFBundleVersion": VERSION,
         "LSMinimumSystemVersion": "14.0",
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
         "NSPrincipalClass": "NSApplication",
+        "NSHumanReadableCopyright": "GPL-3.0-only",
         "NSMicrophoneUsageDescription": (
             "Sonoscribe records while you hold Fn so it can transcribe on this Mac."
         ),

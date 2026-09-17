@@ -1,5 +1,5 @@
 from sonoscribe.commands import apply_commands
-from sonoscribe.cleaner import clean, process
+from sonoscribe.cleaner import clean, prepare_command_text, process
 
 
 def test_strips_fillers_and_capitalizes() -> None:
@@ -55,3 +55,18 @@ def test_new_line_command() -> None:
 
 def test_period_of_time_is_not_punctuation() -> None:
     assert "period of time" in apply_commands("a period of time").lower()
+
+
+def test_command_text_strips_auto_punctuation() -> None:
+    assert prepare_command_text("Mute.") == "Mute"
+    assert prepare_command_text("Open, Safari!") == "Open Safari"
+    assert prepare_command_text("lock screen?") == "lock screen"
+
+
+def test_command_text_keeps_spoken_dots_and_dashes() -> None:
+    assert prepare_command_text("google dot com.") == "google.com"
+    assert prepare_command_text("well dash known") == "well-known"
+
+
+def test_command_text_ignores_spoken_comma_and_period() -> None:
+    assert prepare_command_text("hello comma world period") == "hello comma world period"

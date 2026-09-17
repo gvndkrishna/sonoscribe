@@ -9,6 +9,8 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 from AppKit import (
     NSApplication,
@@ -16,17 +18,19 @@ from AppKit import (
     NSModalResponseOK,
     NSOpenPanel,
 )
-from Foundation import NSObject, NSOperationQueue, NSThread
+from Foundation import NSObject, NSOperationQueue, NSThread, NSURL
 import numpy as np
 import objc
 
-from sonoscribe.catalog import command_by_id, load_library, match_utterance
-from sonoscribe.cleaner import process, strip_fillers
+from sonoscribe.apps import frontmost_app, read_app
+from sonoscribe.catalog import command_by_id, load_library, match_utterance, skip_stats, usable_library
+from sonoscribe.cleaner import prepare_command_text, process
 from sonoscribe.dashboard.server import DashboardServer
 from sonoscribe.executor import KeyboardState, run_command, run_routine_steps
 from sonoscribe.fn_monitor import FnMonitor, FnMonitorError
 from sonoscribe.inserter import insert
-from sonoscribe.lexicon import correct_product_name
+from sonoscribe.key_capture import KeyCapture
+from sonoscribe.slots import variable_map
 from sonoscribe.permissions import (
     accessibility_granted,
     open_accessibility_settings,
@@ -35,13 +39,26 @@ from sonoscribe.permissions import (
 )
 from sonoscribe.recorder import MINIMUM_SAMPLES, SAMPLE_RATE, Recorder, RecorderError
 from sonoscribe.stats import StatsStore
-from sonoscribe.transcriber import Transcriber
+from sonoscribe.transcriber import DEFAULT_MODEL, TranscribeError, Transcriber, friendly_load_error
 
 MIN_HOLD_SECONDS = 0.25
 
 
+def _model_spec(key: str) -> dict[str, Any] | None:
+    from sonoscribe.settings import lookup_model
+
+    return lookup_model(key)
+
+
 def _log(message: str) -> None:
     print(message, flush=True)
+
+
+def _safe_frontmost() -> dict[str, str] | None:
+    try:
+        return frontmost_app()
+    except Exception:
+        return None
 
 
 def _on_main(fn) -> None:
@@ -56,6 +73,7 @@ class _Job:
     kind: str
     samples: np.ndarray
     session: int
+    frontmost: dict[str, str] | None = None
 
 
 class _StatusMenuTarget(NSObject):
@@ -79,7 +97,12 @@ class App:
         self.remove_fillers = remove_fillers
         self.copy_only = copy_only
         self.recorder = Recorder()
-        self.transcriber = Transcriber(model)
+        spec = _model_spec(model) or _model_spec(DEFAULT_MODEL) or {
+            "id": DEFAULT_MODEL,
+            "label": DEFAULT_MODEL,
+            "path": None,
+        }
+        self.transcriber = Transcriber(spec["id"], spec.get("path"))
         self.stats = StatsStore()
         self.keyboard = KeyboardState()
         self._lock = threading.Lock()
@@ -88,6 +111,7 @@ class App:
         self._slice_start = 0
         self._in_command = False
         self._used_command = False
+        self._command_frontmost: dict[str, str] | None = None
         self._session = 0
         self._pending = 0
         self._want_idle = False
@@ -104,7 +128,12 @@ class App:
         self._status_target = None
         self._dashboard_item = None
         self._dashboard: DashboardServer | None = None
+        self._key_capture = KeyCapture()
         self._quitting = False
+        self._wanted_model = spec["id"]
+        self._model_status = "loading"
+        self._model_error = ""
+        self._model_lock = threading.Lock()
         threading.Thread(target=self._job_loop, daemon=True).start()
 
     def run(self) -> int:
@@ -129,7 +158,6 @@ class App:
         signal.signal(signal.SIGINT, _interrupt)
         signal.signal(signal.SIGTERM, _interrupt)
 
-        _log(f"Loading Whisper model ({self.transcriber.model_key})…")
         threading.Thread(target=self._load_and_arm, daemon=True).start()
 
         nsapp.run()
@@ -137,10 +165,8 @@ class App:
         return 0
 
     def _load_and_arm(self) -> None:
-        try:
-            self.transcriber.load()
-        except Exception as exc:  # noqa: BLE001
-            _log(f"Failed to load Whisper: {exc}")
+        self._wanted_model = self.transcriber.model_key
+        if not self._switch_model():
             _on_main(self._quit)
             return
 
@@ -155,8 +181,87 @@ class App:
 
         _on_main(start_monitor)
 
+    def model_status(self) -> dict[str, Any]:
+        return {
+            "model": self._wanted_model or self.transcriber.model_key,
+            "active": self.transcriber.model_key,
+            "status": self._model_status,
+            "error": self._model_error,
+            "phase": self._phase,
+        }
+
+    def request_model(self, model_key: str) -> dict[str, Any]:
+        spec = _model_spec(model_key)
+        if spec is None:
+            raise TranscribeError("Unknown model.")
+        key = spec["id"]
+        self._wanted_model = key
+        if key == self.transcriber.model_key and self.transcriber.is_ready() and self._model_status == "ready":
+            return self.model_status()
+        self._model_status = "loading"
+        self._model_error = ""
+        threading.Thread(target=self._switch_model, daemon=True).start()
+        return self.model_status()
+
+    def _switch_model(self) -> bool:
+        from sonoscribe.settings import update_settings
+
+        with self._model_lock:
+            while True:
+                key = self._wanted_model
+                spec = _model_spec(key)
+                if spec is None:
+                    self._model_status = "error"
+                    self._model_error = "Unknown model."
+                    return False
+                if (
+                    spec["id"] == self.transcriber.model_key
+                    and self.transcriber.is_ready()
+                    and self._model_status == "ready"
+                ):
+                    return True
+                self._model_status = "loading"
+                self._model_error = ""
+                _log(f"Loading Whisper model ({spec['label']})…")
+                try:
+                    self.transcriber.set_model(spec["id"], spec.get("path"))
+                except Exception as exc:  # noqa: BLE001
+                    message = friendly_load_error(exc)
+                    self._model_error = message
+                    _log(f"Failed to load Whisper: {message}")
+                    if self.transcriber.is_ready():
+                        self._wanted_model = self.transcriber.model_key
+                        self._model_status = "error"
+                        return True
+                    if spec["id"] != DEFAULT_MODEL:
+                        fallback = _model_spec(DEFAULT_MODEL)
+                        if fallback is not None:
+                            try:
+                                self.transcriber.set_model(fallback["id"], fallback.get("path"))
+                                self._wanted_model = fallback["id"]
+                                update_settings({"model": fallback["id"]})
+                                self._model_status = "error"
+                                return True
+                            except Exception:
+                                pass
+                    self._model_status = "error"
+                    return False
+                update_settings({"model": spec["id"]})
+                self._model_status = "ready"
+                if self._wanted_model == spec["id"]:
+                    return True
+
     def _start_dashboard(self) -> None:
-        server = DashboardServer(stats=self.stats, pick_path=self._pick_path)
+        server = DashboardServer(
+            stats=self.stats,
+            pick_path=self._pick_path,
+            pick_app=self._pick_app,
+            start_key_capture=self._start_key_capture,
+            stop_key_capture=self._stop_key_capture,
+            drain_key_capture=self._key_capture.drain,
+            set_model=self.request_model,
+            model_status=self.model_status,
+        )
         try:
             server.start()
         except OSError as exc:
@@ -168,6 +273,18 @@ class App:
         if self._dashboard_item is not None:
             self._dashboard_item.setEnabled_(True)
         _log(f"Dashboard {server.url}")
+        threading.Thread(target=self._pull_library, daemon=True).start()
+
+    def _pull_library(self) -> None:
+        from sonoscribe.sync import SyncError, pull
+
+        try:
+            result = pull()
+        except SyncError as exc:
+            _log(f"Sync: {exc.message}")
+            return
+        if result.get("changed"):
+            _log("Sync: library updated from the cloud")
 
     def _open_dashboard(self) -> None:
         if self._dashboard is None:
@@ -191,6 +308,44 @@ class App:
         self._call_main(run)
         return chosen[0]
 
+    def _pick_app(self) -> dict[str, str] | None:
+        chosen: list[dict[str, str] | None] = [None]
+
+        def run() -> None:
+            panel = NSOpenPanel.openPanel()
+            panel.setCanChooseFiles_(True)
+            panel.setCanChooseDirectories_(False)
+            panel.setAllowsMultipleSelection_(False)
+            panel.setTreatsFilePackagesAsDirectories_(False)
+            panel.setAllowedFileTypes_(["app"])
+            panel.setDirectoryURL_(NSURL.fileURLWithPath_("/Applications"))
+            panel.setMessage_("Choose an application")
+            if panel.runModal() == NSModalResponseOK:
+                urls = panel.URLs()
+                if urls:
+                    chosen[0] = read_app(Path(str(urls[0].path())))
+
+        self._call_main(run)
+        return chosen[0]
+
+    def _start_key_capture(self) -> dict:
+        out: dict = {}
+
+        def run() -> None:
+            out.update(self._key_capture.start())
+
+        self._call_main(run)
+        return out or {"ok": False, "native": False}
+
+    def _stop_key_capture(self) -> dict:
+        out: dict = {}
+
+        def run() -> None:
+            out.update(self._key_capture.stop())
+
+        self._call_main(run)
+        return out or {"ok": True, "native": False, "keys": [], "stopped": False}
+
     def _quit(self) -> None:
         if self._quitting:
             return
@@ -198,6 +353,10 @@ class App:
         _log("Quitting…")
         try:
             self._monitor.stop()
+        except Exception:
+            pass
+        try:
+            self._key_capture.stop()
         except Exception:
             pass
         try:
@@ -269,12 +428,14 @@ class App:
             self._slice_start = 0
             self._in_command = False
             self._used_command = False
+            self._command_frontmost = None
             self._want_idle = False
             self._hold_started = time.monotonic()
             self._phase = "recording"
             _log("Listening — hold Cmd for commands, release Fn to finish")
 
     def on_command_begin(self) -> None:
+        snapped = _safe_frontmost()
         with self._lock:
             if self._phase != "recording" or self._in_command:
                 return
@@ -282,6 +443,7 @@ class App:
             self._slice_start = end
             self._in_command = True
             self._used_command = True
+            self._command_frontmost = snapped
             self._enqueue_locked("dictate", samples, self._session)
             _log("Command mode")
 
@@ -292,7 +454,7 @@ class App:
             samples, end = self.recorder.snapshot(self._slice_start)
             self._slice_start = end
             self._in_command = False
-            self._enqueue_locked("command", samples, self._session)
+            self._enqueue_locked("command", samples, self._session, self._command_frontmost)
             _log("Dictating")
 
     def on_cancel(self) -> None:
@@ -302,6 +464,7 @@ class App:
                 _log("Cancelled")
             self._session += 1
             self._in_command = False
+            self._command_frontmost = None
             self._hold_started = None
             self._want_idle = True
             self._phase = "busy" if self._pending else "idle"
@@ -315,8 +478,10 @@ class App:
             kind = "command" if self._in_command else "dictate"
             used_command = self._used_command
             session = self._session
+            frontmost = self._command_frontmost if kind == "command" else None
             self.recorder.stop()
             self._in_command = False
+            self._command_frontmost = None
             self._hold_started = None
             self._slice_start = 0
             self._want_idle = True
@@ -325,14 +490,22 @@ class App:
                 self._phase = "busy" if self._pending else "idle"
                 _log("Discarded (too short)")
                 return
-            self._enqueue_locked(kind, leftover, session)
+            self._enqueue_locked(kind, leftover, session, frontmost)
             self._phase = "busy" if self._pending else "idle"
 
-    def _enqueue_locked(self, kind: str, samples: np.ndarray, session: int) -> None:
+    def _enqueue_locked(
+        self,
+        kind: str,
+        samples: np.ndarray,
+        session: int,
+        frontmost: dict[str, str] | None = None,
+    ) -> None:
         if samples.size < MINIMUM_SAMPLES:
             return
         self._pending += 1
-        self._jobs.put(_Job(kind, samples, session))
+        if kind == "command" and not frontmost:
+            frontmost = _safe_frontmost()
+        self._jobs.put(_Job(kind, samples, session, frontmost if kind == "command" else None))
 
     def _job_loop(self) -> None:
         while True:
@@ -360,22 +533,24 @@ class App:
         heard = result.text.strip()
         _log(f"Heard: {heard or '(empty)'}")
         if job.kind == "command":
-            self._run_command_text(heard)
+            self._run_command_text(heard, job.frontmost)
             return
         text = process(heard, remove_fillers=self.remove_fillers) if heard else ""
         if not text:
             _log("Nothing to paste")
             return
         seconds = float(job.samples.size) / float(SAMPLE_RATE)
-        self._call_main(lambda: self._paste(text))
-        self.stats.record_dictation(text, seconds)
+        captured = bool(self._dashboard and self._dashboard.append_test(text))
+        if not captured:
+            self._call_main(lambda: self._paste(text))
+        self.stats.record_dictation(text, seconds, model=self.transcriber.model_key)
 
-    def _run_command_text(self, heard: str) -> None:
-        cleaned = " ".join(strip_fillers(correct_product_name(heard)).split())
+    def _run_command_text(self, heard: str, frontmost: dict[str, str] | None = None) -> None:
+        cleaned = prepare_command_text(heard)
         if not cleaned:
             return
-        library = load_library()
-        hit = match_utterance(cleaned, library)
+        library = usable_library(load_library())
+        hit = match_utterance(cleaned, library, frontmost=frontmost)
         if hit.kind == "routine_incomplete":
             _log("Unknown command: routine")
             return
@@ -384,14 +559,19 @@ class App:
             return
         if hit.kind == "routine" and hit.routine is not None:
             routine = hit.routine
-            self.stats.record_routine(hit.label)
+            bindings = dict(hit.bindings or {})
+            variables = variable_map(library)
+            if not skip_stats(routine):
+                self.stats.record_routine(hit.label, model=self.transcriber.model_key)
             _log(f"Routine {hit.label}")
 
             def invoke(command: dict, keyboard: KeyboardState) -> str:
                 result: list[str] = [""]
 
                 def run() -> None:
-                    result[0] = run_command(command, keyboard)
+                    result[0] = run_command(
+                        command, keyboard, bindings=bindings, variables=variables
+                    )
 
                 self._call_main(run)
                 return result[0]
@@ -401,17 +581,30 @@ class App:
                 lambda command_id: command_by_id(library, command_id),
                 self.keyboard,
                 _log,
-                on_command=lambda _command, label: self.stats.record_command(label),
+                on_command=lambda command, label: None
+                if skip_stats(command, routine)
+                else self.stats.record_command(
+                    label, str(command.get("type") or ""), model=self.transcriber.model_key
+                ),
                 invoke=invoke,
+                bindings=bindings,
+                variables=variables,
             )
             return
         if hit.kind == "command" and hit.command is not None:
             command = hit.command
+            bindings = dict(hit.bindings or {})
+            variables = variable_map(library)
 
             def run() -> None:
-                label = run_command(command, self.keyboard)
+                label = run_command(
+                    command, self.keyboard, bindings=bindings, variables=variables
+                )
                 _log(label)
-                self.stats.record_command(label)
+                if not skip_stats(command):
+                    self.stats.record_command(
+                        label, str(command.get("type") or ""), model=self.transcriber.model_key
+                    )
 
             self._call_main(run)
 
