@@ -2,7 +2,7 @@
 <html lang="en" data-theme="light" data-accent="amber" data-reduce-motion="false">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Sonoscribe</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/favicon.png" />
@@ -12,7 +12,10 @@
   <div class="shell">
     <header class="masthead glass glass-down">
       <div class="glass-fill" aria-hidden="true"></div>
-      <div class="wordmark">sonoscribe <span>ss–1</span></div>
+      <button type="button" class="wordmark" id="wordmark-pulse" aria-label="Animate sonoscribe">
+        <span aria-hidden="true">s</span><span aria-hidden="true">o</span><span aria-hidden="true">n</span><span aria-hidden="true">o</span><span aria-hidden="true">s</span><span aria-hidden="true">c</span><span aria-hidden="true">r</span><span aria-hidden="true">i</span><span aria-hidden="true">b</span><span aria-hidden="true">e</span>
+        <small aria-hidden="true">ss–1</small>
+      </button>
       <nav>
         <button type="button" data-view="overview" class="active">
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -69,7 +72,7 @@
           </div>
           <div class="page-actions">
             <div class="chart-add-wrap">
-              <button type="button" class="icon-btn" id="add-chart" aria-label="Add graph">+</button>
+              <button type="button" class="icon-btn icon-plus" id="add-chart" aria-label="Add graph">+</button>
               <div id="chart-add-menu" class="chart-add-menu glass glass-box hidden" role="menu">
                 <div class="glass-fill" aria-hidden="true"></div>
                 <div id="chart-add-items"></div>
@@ -153,6 +156,13 @@
           </header>
           <ul id="activity" class="activity"></ul>
         </article>
+        <footer class="overview-footer glass glass-box" tabindex="0" aria-label="Sonoscribe. Designed and Built by Govind Krishna.">
+          <div class="glass-fill" aria-hidden="true"></div>
+          <div class="overview-footer-copy" aria-hidden="true">
+            <span class="overview-footer-brand">sonoscribe</span>
+            <span class="overview-footer-credit">Designed and Built by Govind Krishna</span>
+          </div>
+        </footer>
       </section>
 
       <section id="view-commands" class="view hidden">
@@ -165,7 +175,7 @@
             <button type="button" class="icon-btn hidden" id="reveal-commands" aria-label="Show secret commands" aria-pressed="false">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>
             </button>
-            <button type="button" class="icon-btn" id="add-command" aria-label="Add command">+</button>
+            <button type="button" class="icon-btn icon-plus" id="add-command" aria-label="Add command">+</button>
           </div>
         </header>
         <div class="toolbar">
@@ -197,7 +207,7 @@
             <button type="button" class="icon-btn hidden" id="reveal-routines" aria-label="Show secret routines" aria-pressed="false">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>
             </button>
-            <button type="button" class="icon-btn" id="add-routine" aria-label="Add routine">+</button>
+            <button type="button" class="icon-btn icon-plus" id="add-routine" aria-label="Add routine">+</button>
           </div>
         </header>
         <div id="routine-list"></div>
@@ -213,7 +223,7 @@
             <button type="button" class="icon-btn hidden" id="reveal-voice" aria-label="Show secret vocab" aria-pressed="false">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>
             </button>
-            <button type="button" class="icon-btn" id="add-voice" aria-label="Add vocab">+</button>
+            <button type="button" class="icon-btn icon-plus" id="add-voice" aria-label="Add vocab">+</button>
           </div>
         </header>
         <div class="toolbar">
@@ -284,7 +294,7 @@
               <div class="field-label">custom</div>
               <div class="field-control model-stack">
                 <div id="model-custom" class="model-picks"></div>
-                <button type="button" class="icon-btn" id="add-custom-model" aria-label="Add custom model">+</button>
+                <button type="button" class="icon-btn icon-plus" id="add-custom-model" aria-label="Add custom model">+</button>
                 <div id="model-add-form" class="model-add-form hidden">
                   <div class="field-row">
                     <input id="custom-model-path" type="text" placeholder="path" autocomplete="off" />
@@ -395,6 +405,13 @@
   <dialog id="lock-gate" class="lock-gate glass glass-box">
     <div class="glass-fill" aria-hidden="true"></div>
     <div class="lock-copy">
+      <div class="lock-mark" id="lock-mark" aria-hidden="true">
+        <svg viewBox="0 0 48 48">
+          <path class="lock-shackle" d="M16 24V16a8 8 0 0 1 16 0v8"/>
+          <rect class="lock-body" x="12" y="24" width="24" height="18"/>
+          <path class="lock-key" d="M24 31v5"/>
+        </svg>
+      </div>
       <p class="unit" id="lock-kicker">locked</p>
       <h1 id="lock-title">sonoscribe</h1>
       <p class="lock-hint" id="lock-hint"></p>

@@ -334,7 +334,7 @@ function lockBlocks() {
   return Boolean(settings.lock?.enabled && settings.lock?.unlocked === false);
 }
 
-function applyLock(data) {
+function applyLock(data, { keepGate = false } = {}) {
   if (!data) return;
   settings.lock = {
     ...(settings.lock || {}),
@@ -356,7 +356,7 @@ function applyLock(data) {
   renderSecretButtons();
   renderLockFields();
   if (lockBlocks()) clearTimeout(lockIdleTimer);
-  else {
+  else if (!keepGate) {
     hideLockGate();
     armLockIdle();
   }
@@ -487,6 +487,7 @@ function showLockGate(mode) {
   $("#lock-hint").textContent = "Enter your 4-digit PIN";
   $("#lock-pin-submit").textContent = unlock ? "unlock" : "confirm";
   $("#lock-cancel")?.classList.toggle("hidden", unlock);
+  $("#lock-mark")?.classList.remove("is-unlock");
   const pin = $("#lock-gate-pin");
   if (pin) pin.value = "";
   if (!gate.open) gate.showModal();
@@ -574,7 +575,7 @@ function promptLock(mode) {
           body: JSON.stringify({ pin }),
           _skipConfirm: true,
         });
-        applyLock(data);
+        applyLock(data, { keepGate: mode === "unlock" });
         if (mode === "unlock") await afterUnlock();
         finish(true);
       } catch (err) {
@@ -601,7 +602,36 @@ function promptLock(mode) {
   });
 }
 
+function playUnlockMark() {
+  return new Promise((resolve) => {
+    const mark = $("#lock-mark");
+    const shackle = mark?.querySelector(".lock-shackle");
+    if (!shackle || motionReduced()) {
+      resolve();
+      return;
+    }
+    mark.classList.remove("is-unlock");
+    void mark.offsetWidth;
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      shackle.removeEventListener("animationend", onEnd);
+      resolve();
+    };
+    const onEnd = (event) => {
+      if (event.target !== shackle) return;
+      if (event.animationName && event.animationName !== "lock-open") return;
+      done();
+    };
+    shackle.addEventListener("animationend", onEnd);
+    mark.classList.add("is-unlock");
+    window.setTimeout(done, 720);
+  });
+}
+
 async function afterUnlock() {
+  await playUnlockMark();
   hideLockGate();
   armLockIdle();
   if (appBooted) {
@@ -2507,7 +2537,7 @@ function openRoutineEditor(index) {
     <div class="field">
       <span class="field-label">steps</span>
       <div class="field-control">
-        <button type="button" class="icon-btn" id="add-step" aria-label="Add step">+</button>
+        <button type="button" class="icon-btn icon-plus" id="add-step" aria-label="Add step">+</button>
         <div id="steps">${(rtn.steps || []).map(stepHtml).join("")}</div>
       </div>
     </div>
@@ -2710,12 +2740,34 @@ function showView(name) {
   if (name === "overview") playOverviewMotion();
 }
 
+function pulsePress(el) {
+  if (!el || motionReduced()) return;
+  el.classList.remove("is-press");
+  void el.offsetWidth;
+  el.classList.add("is-press");
+}
+
 function pulseNav(name) {
-  const btn = document.querySelector(`nav button[data-view="${name}"]`);
-  if (!btn || document.documentElement.dataset.reduceMotion === "true") return;
-  btn.classList.remove("is-press");
-  void btn.offsetWidth;
-  btn.classList.add("is-press");
+  pulsePress(document.querySelector(`nav button[data-view="${name}"]`));
+}
+
+function bindPressFeedback() {
+  document.addEventListener("click", (event) => {
+    const btn = event.target.closest("button");
+    if (!btn || btn.disabled || btn.getAttribute("aria-disabled") === "true") return;
+    if (btn.id === "wordmark-pulse") return;
+    if (btn.classList.contains("switch") || btn.classList.contains("swatch")) return;
+    if (btn.classList.contains("primary") || btn.classList.contains("accent-btn") || btn.classList.contains("danger")) return;
+    pulsePress(btn);
+  });
+}
+
+function pulseWordmark() {
+  const wordmark = $("#wordmark-pulse");
+  if (!wordmark || document.documentElement.dataset.reduceMotion === "true") return;
+  wordmark.classList.remove("is-press");
+  void wordmark.offsetWidth;
+  wordmark.classList.add("is-press");
 }
 
 function editorOpen() {
@@ -2782,6 +2834,8 @@ function startAutoRefresh() {
 
 async function boot() {
   bindLockUi();
+  bindPressFeedback();
+  $("#wordmark-pulse")?.addEventListener("click", pulseWordmark);
   document.querySelectorAll("nav button").forEach((btn) => {
     btn.addEventListener("click", () => showView(btn.dataset.view));
   });

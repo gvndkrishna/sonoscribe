@@ -138,15 +138,29 @@ def test_static_assets_exist() -> None:
     assert ".glass-down" in css
     assert "--glass-bleed: 36px" in css
     assert "backdrop-filter" in css
+    assert 'viewport-fit=cover' in html
     assert 'class="masthead glass glass-down"' in html
+    assert "env(safe-area-inset-bottom" in css
     assert "hold <kbd>fn</kbd> to dictate" not in html
     assert "grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr)" in css
     assert 'data-view="overview"' in html
+    assert html.count('class="overview-footer glass glass-box"') == 1
+    assert "Designed and Built by Govind Krishna" in html
+    assert html.index("overview-footer") < html.index('id="view-commands"')
+    assert ".overview-footer:hover .overview-footer-credit" in css
     assert "nav button svg" in css
     assert "nav button:hover span" in css
     assert "flex: 0 0 44px" in css
     assert "width: 4px" in css
     assert "pulseNav" in js
+    assert "pulsePress" in js
+    assert "bindPressFeedback" in js
+    assert "icon-plus" in html
+    assert "@keyframes icon-refresh" in css
+    assert "@keyframes btn-accent" in css
+    assert 'id="wordmark-pulse"' in html
+    assert "pulseWordmark" in js
+    assert ".wordmark.is-press > span" in css
     assert "@keyframes nav-wave" in css
     assert "open-settings" in html
     assert 'id="open-settings"' in html
@@ -179,6 +193,12 @@ def test_static_assets_exist() -> None:
     assert "private_mode" in js
     assert 'id="dashboard-lock"' in html
     assert 'id="lock-gate"' in html
+    assert 'id="lock-mark"' in html
+    assert "lock-shackle" in html
+    assert "@keyframes lock-open" in css
+    assert "@keyframes lock-hint" not in css
+    assert "playUnlockMark" in js
+    assert "keepGate" in js
     assert "setLockScroll" in js
     assert "setPageFreeze" in js
     assert "packCharts" in js

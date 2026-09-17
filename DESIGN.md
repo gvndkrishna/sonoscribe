@@ -49,7 +49,7 @@ Themes: `html[data-theme="light"|"dark"]`. Accents: `html[data-accent]`. Check b
 
 ## Layout
 
-- Sticky masthead (~48px): wordmark left, icon views centered, gear right. A 4px square marks the active view. Labels overlay below on hover. Gear turns 90° while settings is open.
+- Sticky masthead (~48px): wordmark left, icon views centered, gear right. A 4px square marks the active view. Labels overlay on hover. On small screens the bar is fixed at the bottom (four views + settings, no wordmark) with frost bleeding up.
 - `overflow-x: clip` on the document
 - Page heads: `.unit` (`01 / library`) then lowercase `h1`
 - Primary actions: `.icon-btn`. Text actions: `.text-btn`
@@ -57,4 +57,4 @@ Themes: `html[data-theme="light"|"dark"]`. Accents: `html[data-accent]`. Check b
 
 ## Motion
 
-Honor `data-reduce-motion`. Prefer CSS; keep transitions short. No decorative animation on charts or meters. Nav icons play a short press motion. Nav labels fade in below the icon on hover.
+Honor `data-reduce-motion`. Prefer CSS; keep transitions short. No decorative animation on charts or meters. Nav icons play a short press motion. Refresh spins; plus marks turn. Buttons take the accent for a moment on press. Nav labels fade in below the icon on hover. The lock screen padlock stays still. On a successful PIN the shackle opens; the dashboard appears when that motion ends.
