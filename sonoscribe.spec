@@ -82,6 +82,10 @@ datas += collect_data_files("mlx_whisper")
 dash_static = ROOT / "src" / "sonoscribe" / "dashboard" / "static"
 if dash_static.is_dir():
     datas.append((str(dash_static), "sonoscribe/dashboard/static"))
+resources = ROOT / "src" / "sonoscribe" / "resources"
+if resources.is_dir():
+    datas.append((str(resources), "sonoscribe/resources"))
+app_icon = ROOT / "assets" / "AppIcon.icns"
 license_file = ROOT / "LICENSE"
 if license_file.is_file():
     datas.append((str(license_file), "."))
@@ -161,7 +165,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="Sonoscribe.app",
-    icon=None,
+    icon=str(app_icon) if app_icon.is_file() else None,
     bundle_identifier="dev.sonoscribe.app",
     version=VERSION,
     codesign_identity=None,

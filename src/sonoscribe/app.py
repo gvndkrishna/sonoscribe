@@ -375,18 +375,30 @@ class App:
         NSApplication.sharedApplication().terminate_(None)
 
     def _install_status_item(self) -> None:
-        from AppKit import NSMenu, NSMenuItem, NSStatusBar, NSVariableStatusItemLength
+        from AppKit import (
+            NSMenu,
+            NSMenuItem,
+            NSSquareStatusItemLength,
+            NSStatusBar,
+            NSVariableStatusItemLength,
+        )
 
         target = _StatusMenuTarget.alloc().init()
         target._owner = self
         self._status_target = target
 
-        item = NSStatusBar.systemStatusBar().statusItemWithLength_(NSVariableStatusItemLength)
+        image = self._status_image()
+        length = NSSquareStatusItemLength if image is not None else NSVariableStatusItemLength
+        item = NSStatusBar.systemStatusBar().statusItemWithLength_(length)
         button = item.button()
         if button is not None:
-            button.setTitle_("Sonoscribe")
-            button.setToolTip_("Dashboard or Quit")
-        else:
+            if image is not None:
+                button.setImage_(image)
+                button.setTitle_("")
+            else:
+                button.setTitle_("Sonoscribe")
+            button.setToolTip_("Sonoscribe")
+        elif image is None:
             item.setTitle_("Sonoscribe")
 
         menu = NSMenu.alloc().init()
@@ -411,6 +423,23 @@ class App:
 
         self._status_item = item
         self._status_menu = menu
+
+    def _status_image(self):
+        from AppKit import NSImage, NSMakeSize
+
+        from sonoscribe.runtime import resource_path
+
+        path = resource_path("StatusItem@2x.png")
+        if not path.is_file():
+            path = resource_path("StatusItem.png")
+        if not path.is_file():
+            return None
+        image = NSImage.alloc().initWithContentsOfFile_(str(path))
+        if image is None:
+            return None
+        image.setTemplate_(True)
+        image.setSize_(NSMakeSize(18.0, 18.0))
+        return image
 
     def on_begin(self) -> None:
         with self._lock:

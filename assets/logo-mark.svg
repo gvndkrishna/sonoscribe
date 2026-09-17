@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="sonoscribe">
+  <rect width="512" height="512" fill="#0f0e12"/>
+  <g
+    fill="none"
+    stroke="#f6f8f7"
+    stroke-width="6"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    transform="translate(86 156)"
+  >
+    <path d="M48 196 C6 180 4 132 48 112 C92 92 90 42 48 26"/>
+    <path d="M252 26 C294 42 296 92 252 112 C208 132 210 180 252 196"/>
+  </g>
+  <line
+    x1="214"
+    y1="268"
+    x2="298"
+    y2="268"
+    stroke="#b7a56a"
+    stroke-width="5"
+    stroke-linecap="butt"
+  />
+  <rect x="0" y="508" width="512" height="4" fill="#b7a56a"/>
+</svg>

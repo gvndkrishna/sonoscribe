@@ -42,7 +42,7 @@ A source run is a different TCC identity than `Sonoscribe.app`. Grant permission
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [DESIGN.md](DESIGN.md).
+See the [wiki](https://github.com/gvndkrishna/sonoscribe/wiki), [CONTRIBUTING.md](CONTRIBUTING.md), and [DESIGN.md](DESIGN.md).
 
 ## License
 
