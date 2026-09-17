@@ -232,6 +232,45 @@ def test_secret_library_get_put_and_reveal(tmp_path, monkeypatch) -> None:
         server.stop()
 
 
+def test_change_pin_requires_current(tmp_path) -> None:
+    stats = StatsStore()
+    server = DashboardServer(stats, port=0)
+    server.start()
+    try:
+        status, body = _call(server.url + "api/lock/setup", "POST", {"pin": "1234"})
+        assert status == 200
+        token = body["token"]
+        status, body = _call(
+            server.url + "api/lock/setup",
+            "POST",
+            {"pin": "5678"},
+            token=token,
+        )
+        assert status == 401
+        status, body = _call(
+            server.url + "api/lock/setup",
+            "POST",
+            {"pin": "5678", "current": "0000"},
+            token=token,
+        )
+        assert status == 401
+        status, body = _call(
+            server.url + "api/lock/setup",
+            "POST",
+            {"pin": "5678", "current": "1234"},
+            token=token,
+        )
+        assert status == 200
+        token = body["token"]
+        _call(server.url + "api/lock/lock", "POST", {}, token=token)
+        status, body = _call(server.url + "api/lock/unlock", "POST", {"pin": "1234"})
+        assert status == 401
+        status, body = _call(server.url + "api/lock/unlock", "POST", {"pin": "5678"})
+        assert status == 200
+    finally:
+        server.stop()
+
+
 def test_lock_now_clears_session() -> None:
     stats = StatsStore()
     server = DashboardServer(stats, port=0)

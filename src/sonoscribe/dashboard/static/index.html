@@ -14,13 +14,51 @@
       <div class="glass-fill" aria-hidden="true"></div>
       <div class="wordmark">sonoscribe <span>ss–1</span></div>
       <nav>
-        <button type="button" data-view="overview" class="active">overview</button>
-        <button type="button" data-view="commands">commands</button>
-        <button type="button" data-view="routines">routines</button>
-        <button type="button" data-view="voice">voice</button>
+        <button type="button" data-view="overview" class="active">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="3" width="8" height="11"/>
+            <rect x="13" y="3" width="8" height="6"/>
+            <rect x="13" y="11" width="8" height="10"/>
+            <rect x="3" y="16" width="8" height="5"/>
+          </svg>
+          <span>overview</span>
+        </button>
+        <button type="button" data-view="commands">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 17l6-6-6-6"/>
+            <path d="M12 19h8"/>
+          </svg>
+          <span>commands</span>
+        </button>
+        <button type="button" data-view="routines">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="5" width="2" height="2"/>
+            <rect x="3" y="11" width="2" height="2"/>
+            <rect x="3" y="17" width="2" height="2"/>
+            <path d="M8 6h13"/>
+            <path d="M8 12h13"/>
+            <path d="M8 18h13"/>
+          </svg>
+          <span>routines</span>
+        </button>
+        <button type="button" data-view="voice">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 10v4"/>
+            <path d="M8 6v12"/>
+            <path d="M12 4v16"/>
+            <path d="M16 8v8"/>
+            <path d="M20 10v4"/>
+          </svg>
+          <span>vocab</span>
+        </button>
       </nav>
-      <p class="hint">hold <kbd>fn</kbd> to dictate. hold <kbd>fn</kbd>+<kbd>⌘</kbd> for a command.</p>
-      <button type="button" id="open-settings" class="text-btn" aria-label="Settings">settings<span class="settings-mark hidden" aria-hidden="true">*</span></button>
+      <button type="button" id="open-settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+        </svg>
+        <span class="settings-mark hidden" aria-hidden="true">*</span>
+      </button>
     </header>
     <main>
       <section id="view-overview" class="view">
@@ -168,19 +206,19 @@
       <section id="view-voice" class="view hidden">
         <header class="page-head">
           <div>
-            <p class="unit">04 / voice</p>
-            <h1>voice</h1>
+            <p class="unit">04 / vocab</p>
+            <h1>vocab</h1>
           </div>
           <div class="page-actions">
-            <button type="button" class="icon-btn hidden" id="reveal-voice" aria-label="Show secret voice variables" aria-pressed="false">
+            <button type="button" class="icon-btn hidden" id="reveal-voice" aria-label="Show secret vocab" aria-pressed="false">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>
             </button>
-            <button type="button" class="icon-btn" id="add-voice" aria-label="Add voice variable">+</button>
+            <button type="button" class="icon-btn" id="add-voice" aria-label="Add vocab">+</button>
           </div>
         </header>
         <div class="toolbar">
           <label class="search">
-            <span class="sr-only">Search voice</span>
+            <span class="sr-only">Search vocab</span>
             <input id="voice-search" type="search" placeholder="search" autocomplete="off" />
           </label>
         </div>
@@ -197,7 +235,7 @@
         <button type="button" data-settings-pane="personalization" class="active">personalization</button>
         <button type="button" data-settings-pane="model">model</button>
         <button type="button" data-settings-pane="account">account</button>
-        <button type="button" data-settings-pane="sync">sync<span class="settings-mark hidden" aria-hidden="true">*</span></button>
+        <button type="button" data-settings-pane="sync" aria-disabled="true">sync<span class="settings-mark hidden" aria-hidden="true">*</span></button>
       </aside>
       <div class="settings-main">
         <section id="pane-personalization" class="settings-pane">
@@ -282,22 +320,34 @@
                   <button type="button" class="switch" id="private-mode" aria-pressed="false" aria-label="Private mode"><i></i></button>
                   <span>private mode</span>
                 </div>
+              </div>
+            </div>
+            <div class="field">
+              <div class="field-label">lock</div>
+              <div class="field-control">
                 <div class="motion-switch">
                   <button type="button" class="switch" id="dashboard-lock" aria-pressed="false" aria-label="Dashboard lock"><i></i></button>
                   <span>lock this Mac</span>
                 </div>
                 <div id="lock-fields" class="lock-fields hidden">
-                  <div id="lock-pin-fields" class="field-row">
+                  <div id="lock-pin-fields" class="field-row hidden">
                     <input id="lock-pin" type="password" inputmode="numeric" maxlength="4" placeholder="PIN" autocomplete="off" />
                     <input id="lock-pin-again" type="password" inputmode="numeric" maxlength="4" placeholder="again" autocomplete="off" />
+                  </div>
+                  <div id="lock-change-fields" class="lock-change-fields hidden">
+                    <input id="lock-pin-old" type="password" inputmode="numeric" maxlength="4" placeholder="old PIN" autocomplete="off" />
+                    <input id="lock-pin-new" type="password" inputmode="numeric" maxlength="4" placeholder="new PIN" autocomplete="off" />
+                    <input id="lock-pin-confirm" type="password" inputmode="numeric" maxlength="4" placeholder="confirm" autocomplete="off" />
                   </div>
                   <label class="lock-timeout">
                     <span>auto-lock</span>
                     <select id="lock-timeout"></select>
                   </label>
-                  <div class="field-row">
-                    <button type="button" class="ghost" id="lock-save">save lock</button>
-                    <button type="button" class="ghost" id="lock-now">lock now</button>
+                  <button type="button" class="text-btn hidden" id="lock-change">change PIN</button>
+                  <div class="field-row" id="lock-actions">
+                    <button type="button" class="ghost hidden" id="lock-cancel-change">cancel</button>
+                    <button type="button" class="ghost hidden" id="lock-save">save</button>
+                    <button type="button" class="ghost hidden" id="lock-now">lock now</button>
                   </div>
                 </div>
               </div>
@@ -359,8 +409,9 @@
     <div class="glass-fill" aria-hidden="true"></div>
     <span class="glass-copy"></span>
   </div>
-  <div id="toast" class="glass glass-box" hidden>
+  <div id="toast" class="glass glass-box" popover="manual">
     <div class="glass-fill" aria-hidden="true"></div>
+    <p class="unit" id="toast-kicker">notice</p>
     <span class="glass-copy"></span>
   </div>
   <script src="/app.js"></script>

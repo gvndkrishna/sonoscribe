@@ -19,6 +19,8 @@ ACCENT_ALIASES = {
 }
 KEYCHAIN_SCOPES = ("local", "icloud")
 SYNC_PROVIDERS = ("aws", "gcs", "azure")
+SYNC_INTERVALS = (0, 300, 900, 1800, 3600)
+DEFAULT_SYNC_INTERVAL = 900
 TIMEZONE_OPTIONS: list[dict[str, str]] = [
     {"id": "local", "label": "This Mac"},
     {"id": "UTC", "label": "UTC"},
@@ -101,6 +103,7 @@ def empty_settings() -> dict[str, Any]:
             "needs_confirm": False,
             "needs_key": False,
             "needs_create": False,
+            "interval_sec": DEFAULT_SYNC_INTERVAL,
             "what": {"library": True, "stats": False},
         },
         "charts": default_charts(),
@@ -272,6 +275,7 @@ def public_settings(data: dict[str, Any] | None = None) -> dict[str, Any]:
         "device": dict(cleaned["device"]),
         "devices": list(cleaned["devices"]),
         "sync": dict(cleaned["sync"]),
+        "sync_intervals": list(SYNC_INTERVALS),
         "timezones": list(TIMEZONE_OPTIONS),
         "accents": list(ACCENTS),
         "themes": list(THEMES),
@@ -532,6 +536,11 @@ def _clean_sync(raw: dict[str, Any]) -> dict[str, Any]:
     sync["needs_confirm"] = bool(raw.get("needs_confirm"))
     sync["needs_key"] = bool(raw.get("needs_key"))
     sync["needs_create"] = bool(raw.get("needs_create"))
+    try:
+        interval = int(raw.get("interval_sec"))
+    except (TypeError, ValueError):
+        interval = DEFAULT_SYNC_INTERVAL
+    sync["interval_sec"] = interval if interval in SYNC_INTERVALS else DEFAULT_SYNC_INTERVAL
     what_raw = raw.get("what")
     what = dict(sync["what"])
     if isinstance(what_raw, dict):

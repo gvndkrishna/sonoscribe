@@ -112,6 +112,19 @@ def test_private_mode_keeps_stats_preference_but_blocks_sync() -> None:
     assert sync_what(data)["stats"] is True
 
 
+def test_sync_interval_defaults_and_patch() -> None:
+    assert empty_settings()["sync"]["interval_sec"] == 900
+    assert validate_settings({})["sync"]["interval_sec"] == 900
+    assert validate_settings({"sync": {"interval_sec": 0}})["sync"]["interval_sec"] == 0
+    assert validate_settings({"sync": {"interval_sec": 300}})["sync"]["interval_sec"] == 300
+    assert validate_settings({"sync": {"interval_sec": 17}})["sync"]["interval_sec"] == 900
+    saved = update_settings({"sync": {"interval_sec": 3600}})
+    assert saved["sync"]["interval_sec"] == 3600
+    assert public_settings()["sync"]["interval_sec"] == 3600
+    update_settings({"sync": {"interval_sec": 0}})
+    assert load_settings()["sync"]["interval_sec"] == 0
+
+
 def test_update_username_and_device_name() -> None:
     update_settings({"username": "studio", "device": {"name": "Desk Mac"}})
     data = load_settings()
@@ -185,6 +198,8 @@ def test_public_settings_omits_nothing_secret() -> None:
     assert "private_key" not in public
     assert "timezones" in public
     assert public["sync"]["enabled"] is False
+    assert public["sync"]["interval_sec"] == 900
+    assert public["sync_intervals"] == [0, 300, 900, 1800, 3600]
     assert public["username"] == ""
     assert public["device"]["id"]
     assert public["model"] == "large-v3-turbo"

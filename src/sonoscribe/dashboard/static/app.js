@@ -88,12 +88,20 @@ const LOCK_TIMEOUT_LABEL = {
   2700: "45 minutes",
   3600: "60 minutes",
 };
+const SYNC_INTERVAL_LABEL = {
+  0: "manual",
+  300: "5 minutes",
+  900: "15 minutes",
+  1800: "30 minutes",
+  3600: "60 minutes",
+};
 let lockIdleTimer = 0;
 let lastLockActivity = 0;
 let appBooted = false;
 let autoRefreshStarted = false;
 let lockPrompt = null;
 let lockDrafting = false;
+let lockChangingPin = false;
 const OVERVIEW_ANIM_MS = 5000;
 const CLOUD_MS = 2 * 60 * 1000;
 const ACCENTS = ["blue", "purple", "amber", "teal", "gray"];
@@ -132,6 +140,7 @@ let syncEditing = false;
 let syncEnableAfterSave = false;
 let syncValidateError = "";
 let syncSaveGen = 0;
+let syncWizard = "";
 let statsDevice = "";
 let lastStats = null;
 let lastOverviewAnimAt = 0;
@@ -148,17 +157,97 @@ let installedAppsAt = 0;
 
 const $ = (sel) => document.querySelector(sel);
 
+let toastGen = 0;
+
+function overlayDialog() {
+  if ($("#lock-gate")?.open) return $("#lock-gate");
+  if ($("#settings")?.open) return $("#settings");
+  if ($("#editor")?.open) return $("#editor");
+  return null;
+}
+
+function placeToast(el) {
+  const dialog = overlayDialog();
+  el.classList.toggle("in-overlay", Boolean(dialog));
+  el.style.top = "";
+  el.style.left = "";
+  if (!dialog) return;
+  const box = dialog.getBoundingClientRect();
+  el.style.top = `${Math.max(16, box.top + 16)}px`;
+  el.style.left = `${box.left + box.width / 2}px`;
+}
+
+function showToastLayer(el) {
+  if (typeof el.showPopover === "function") {
+    try {
+      if (!el.matches(":popover-open")) el.showPopover();
+      return;
+    } catch (_err) {
+      /* older engines fall through */
+    }
+  }
+  const host = overlayDialog() || document.body;
+  if (el.parentElement !== host) host.appendChild(el);
+  el.hidden = false;
+}
+
+function hideToastLayer(el) {
+  if (typeof el.hidePopover === "function") {
+    try {
+      if (el.matches(":popover-open")) el.hidePopover();
+    } catch (_err) {
+      el.hidden = true;
+    }
+  } else {
+    el.hidden = true;
+  }
+  if (el.parentElement && el.parentElement !== document.body) document.body.appendChild(el);
+}
+
+function hideToast() {
+  const el = $("#toast");
+  if (!el) return;
+  const gen = toastGen;
+  clearTimeout(toast._t);
+  const finish = () => {
+    if (gen !== toastGen) return;
+    hideToastLayer(el);
+    el.classList.remove("is-on", "is-out", "is-error", "in-overlay");
+    el.style.top = "";
+    el.style.left = "";
+  };
+  if (motionReduced() || !el.classList.contains("is-on")) {
+    finish();
+    return;
+  }
+  el.classList.remove("is-on");
+  el.classList.add("is-out");
+  const done = (event) => {
+    if (event && event.target !== el) return;
+    el.removeEventListener("animationend", done);
+    finish();
+  };
+  el.addEventListener("animationend", done);
+  toast._t = setTimeout(done, 220);
+}
+
 function toast(message, kind) {
   const el = $("#toast");
+  if (!el) return;
+  toastGen += 1;
   const copy = el.querySelector(".glass-copy") || el;
+  const kicker = $("#toast-kicker");
   copy.textContent = message;
-  el.hidden = false;
+  if (kicker) kicker.textContent = kind === "error" ? "error" : "notice";
   el.classList.toggle("is-error", kind === "error");
+  el.classList.remove("is-out");
+  placeToast(el);
+  showToastLayer(el);
+  el.classList.remove("is-on");
+  void el.offsetWidth;
+  el.classList.add("is-on");
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => {
-    el.hidden = true;
-    el.classList.remove("is-error");
-  }, 3200);
+  toast._t = setTimeout(hideToast, 3400);
 }
 
 async function api(path, options = {}) {
@@ -221,6 +310,7 @@ function mergeSettings(data) {
     model: data.model || settings.model,
     models: data.models || settings.models,
     sync: data.sync || settings.sync,
+    sync_intervals: data.sync_intervals || settings.sync_intervals,
     providers: data.providers || settings.providers,
     has_private_key: data.has_private_key,
     fingerprint: data.fingerprint || "",
@@ -229,6 +319,7 @@ function mergeSettings(data) {
   };
   applyAppearance(settings);
   applySettingsAttention(settings.sync);
+  updateSyncNav();
 }
 
 function applySettingsAttention(sync) {
@@ -287,13 +378,64 @@ function lockTimeoutOptions() {
   return timeouts.map((sec) => [String(sec), LOCK_TIMEOUT_LABEL[sec] || `${sec / 60} minutes`]);
 }
 
+function lockSaveVisible() {
+  return Boolean(lockDrafting || lockChangingPin);
+}
+
+function lockNowVisible() {
+  return Boolean(settings.lock?.enabled && !lockChangingPin);
+}
+
+function syncReady() {
+  return Boolean(settings.lock?.enabled && String(settings.username || "").trim());
+}
+
+function updateSyncNav() {
+  const btn = document.querySelector('[data-settings-pane="sync"]');
+  if (!btn) return;
+  const ready = syncReady();
+  btn.setAttribute("aria-disabled", ready ? "false" : "true");
+}
+
+function showSettings(pane) {
+  let target = pane || "personalization";
+  if (target === "sync" && !syncReady()) {
+    toast("Lock and username required.");
+    target = "account";
+  }
+  document.querySelectorAll("[data-settings-pane]").forEach((el) => {
+    el.classList.toggle("active", el.dataset.settingsPane === target);
+  });
+  document.querySelectorAll(".settings-pane").forEach((el) => {
+    el.classList.toggle("hidden", el.id !== `pane-${target}`);
+  });
+  syncModelTest(target === "model");
+}
+
+function clearLockPinFields() {
+  ["lock-pin", "lock-pin-again", "lock-pin-old", "lock-pin-new", "lock-pin-confirm"].forEach((id) => {
+    const box = document.getElementById(id);
+    if (box) box.value = "";
+  });
+}
+
 function renderLockFields() {
   const lock = settings.lock || {};
   if (lock.enabled) lockDrafting = false;
+  else lockChangingPin = false;
   const on = Boolean(lock.enabled || lockDrafting);
+  const drafting = Boolean(lockDrafting);
+  const changing = Boolean(lockChangingPin);
   const sw = $("#dashboard-lock");
   if (sw) sw.setAttribute("aria-pressed", on ? "true" : "false");
   $("#lock-fields")?.classList.toggle("hidden", !on);
+  $("#lock-pin-fields")?.classList.toggle("hidden", !drafting);
+  $("#lock-change-fields")?.classList.toggle("hidden", !changing);
+  $("#lock-timeout")?.closest("label")?.classList.toggle("hidden", changing);
+  $("#lock-save")?.classList.toggle("hidden", !(drafting || changing));
+  $("#lock-cancel-change")?.classList.toggle("hidden", !changing);
+  $("#lock-now")?.classList.toggle("hidden", !lockNowVisible());
+  $("#lock-change")?.classList.toggle("hidden", !lockNowVisible());
   const timeout = $("#lock-timeout");
   if (timeout && timeout !== document.activeElement) {
     const current = String(lock.timeout_sec || 900);
@@ -304,6 +446,34 @@ function renderLockFields() {
     }
     timeout.value = current;
   }
+  updateSyncNav();
+}
+
+function setLockScroll(on) {
+  document.documentElement.classList.toggle("is-locked", Boolean(on));
+}
+
+function setPageFreeze(on) {
+  const html = document.documentElement;
+  if (on) {
+    html.dataset.scrollY = String(window.scrollY);
+    html.classList.add("is-frozen");
+    return;
+  }
+  const y = Number(html.dataset.scrollY || 0);
+  html.classList.remove("is-frozen");
+  delete html.dataset.scrollY;
+  window.scrollTo(0, y);
+}
+
+function overlayBlocksPageScroll(event) {
+  if (document.documentElement.classList.contains("is-locked")) {
+    event.preventDefault();
+    return;
+  }
+  if (!document.documentElement.classList.contains("is-frozen")) return;
+  if (event.target.closest("dialog[open] .settings-pane")) return;
+  event.preventDefault();
 }
 
 function showLockGate(mode) {
@@ -311,6 +481,7 @@ function showLockGate(mode) {
   if (!gate) return;
   const unlock = mode === "unlock";
   gate.classList.toggle("lock-full", unlock);
+  setLockScroll(unlock);
   $("#lock-kicker").textContent = unlock ? "locked" : "confirm";
   $("#lock-title").textContent = unlock ? "sonoscribe" : "confirm";
   $("#lock-hint").textContent = "Enter your 4-digit PIN";
@@ -325,6 +496,10 @@ function showLockGate(mode) {
 function hideLockGate() {
   const gate = $("#lock-gate");
   if (gate?.open && !lockBlocks()) gate.close();
+  if (!lockBlocks()) {
+    gate?.classList.remove("lock-full");
+    setLockScroll(false);
+  }
 }
 
 function armLockIdle() {
@@ -464,6 +639,9 @@ function bindLockUi() {
   gate?.addEventListener("cancel", (event) => {
     if (lockBlocks()) event.preventDefault();
   });
+  const stopOverlayScroll = (event) => overlayBlocksPageScroll(event);
+  document.addEventListener("wheel", stopOverlayScroll, { passive: false });
+  document.addEventListener("touchmove", stopOverlayScroll, { passive: false });
   ["pointerdown", "keydown", "click"].forEach((name) => {
     document.addEventListener(name, noteLockActivity, { passive: true });
   });
@@ -739,6 +917,46 @@ function placeChart(existing, w, h) {
   return { x: 0, y: maxY };
 }
 
+function packCharts(layout, pinnedId) {
+  const items = layout.map((item) => clampChart(item));
+  const pinned = pinnedId ? items.find((item) => item.id === pinnedId) : null;
+  const packed = [];
+  if (pinned) packed.push({ ...pinned });
+  items
+    .filter((item) => !pinned || item.id !== pinnedId)
+    .sort((a, b) => a.y - b.y || a.x - b.x)
+    .forEach((item) => {
+      packed.push(settleChart(item, packed));
+    });
+  return packed;
+}
+
+function chartFits(item, occupied) {
+  if (item.x < 0 || item.y < 0 || item.x + item.w > GRID_COLS) return false;
+  return !occupied.some((other) => other.id !== item.id && chartsOverlap(item, other));
+}
+
+function settleChart(item, occupied) {
+  let { id, x, y, w, h } = item;
+  if (!chartFits({ id, x, y, w, h }, occupied)) {
+    const spot = placeChart(occupied, w, h);
+    x = spot.x;
+    y = spot.y;
+  }
+  let moved = true;
+  while (moved) {
+    moved = false;
+    if (y > 0 && chartFits({ id, x, y: y - 1, w, h }, occupied)) {
+      y -= 1;
+      moved = true;
+    } else if (x > 0 && chartFits({ id, x: x - 1, y, w, h }, occupied)) {
+      x -= 1;
+      moved = true;
+    }
+  }
+  return { id, x, y, w, h };
+}
+
 function clampChart(item) {
   const w = Math.min(MAX_W, Math.max(MIN_W, Number(item.w) || DEFAULT_W));
   const h = Math.min(MAX_H, Math.max(MIN_H, Number(item.h) || DEFAULT_H));
@@ -797,34 +1015,6 @@ function hiddenCharts() {
   return CHART_CATALOG.filter((item) => !shown.has(item.id));
 }
 
-function separateCharts(layout, pinnedId) {
-  const items = layout.map((item) => ({ ...item }));
-  const pinned = items.find((item) => item.id === pinnedId);
-  for (let n = 0; n < items.length * 8; n += 1) {
-    let moved = false;
-    items.forEach((other) => {
-      if (!pinned || other.id === pinnedId || !chartsOverlap(pinned, other)) return;
-      other.y = pinned.y + pinned.h;
-      moved = true;
-    });
-    items.forEach((a) => {
-      items.forEach((b) => {
-        if (a.id === b.id || a.id === pinnedId || !chartsOverlap(a, b)) return;
-        const keep = b.y <= a.y ? b : a;
-        const push = keep === a ? b : a;
-        if (push.id === pinnedId) return;
-        const nextY = keep.y + keep.h;
-        if (push.y !== nextY) {
-          push.y = nextY;
-          moved = true;
-        }
-      });
-    });
-    if (!moved) break;
-  }
-  return items;
-}
-
 function chartCardHtml(item) {
   const meta = CHART_CATALOG.find((row) => row.id === item.id);
   const title = meta ? meta.title : item.id;
@@ -848,10 +1038,10 @@ function applyChartSizes(layout) {
   layout.forEach((item) => {
     const card = grid.querySelector(`.chart-card[data-chart="${item.id}"]`);
     if (!card) return;
-    card.style.left = `${(item.x / GRID_COLS) * 100}%`;
-    card.style.width = `${(item.w / GRID_COLS) * 100}%`;
-    card.style.top = `${item.y * ROW_H}px`;
-    card.style.height = `${item.h * ROW_H}px`;
+    card.style.left = `calc(${(item.x / GRID_COLS) * 100}% - 1px)`;
+    card.style.width = `calc(${(item.w / GRID_COLS) * 100}% + 1px)`;
+    card.style.top = `${item.y * ROW_H - 1}px`;
+    card.style.height = `${item.h * ROW_H + 1}px`;
   });
 }
 
@@ -912,16 +1102,31 @@ function addChart(id) {
 }
 
 function removeChart(id) {
-  persistChartLayout(chartLayout().filter((item) => item.id !== id));
+  persistChartLayout(packCharts(chartLayout().filter((item) => item.id !== id)));
 }
 
-function patchChart(id, patch, { persist = false, separate = false } = {}) {
+function patchChart(id, patch, { persist = false, pack = false } = {}) {
   let layout = chartLayout().map((item) => (item.id === id ? clampChart({ ...item, ...patch }) : item));
-  if (separate) layout = separateCharts(layout, id);
+  if (pack) layout = packCharts(layout, id);
   settings.charts = layout;
   applyChartSizes(layout);
   if (persist) persistChartLayout(layout, { rebuild: false });
   return layout;
+}
+
+function edgeScroll(clientY) {
+  const edge = 72;
+  const view = window.innerHeight;
+  let dy = 0;
+  if (clientY < edge) dy = -Math.max(6, Math.round((edge - clientY) * 0.4));
+  else if (clientY > view - edge) dy = Math.max(6, Math.round((clientY - (view - edge)) * 0.4));
+  if (!dy) return false;
+  const top = window.scrollY;
+  const max = Math.max(0, document.documentElement.scrollHeight - view);
+  const next = Math.min(max, Math.max(0, top + dy));
+  if (next === top) return false;
+  window.scrollTo(0, next);
+  return true;
 }
 
 function gridMetrics() {
@@ -939,23 +1144,39 @@ function startChartMove(event, id) {
   const { colW, rowH } = gridMetrics();
   const originX = event.clientX;
   const originY = event.clientY;
+  const startScroll = window.scrollY;
   const startX = item.x;
   const startY = item.y;
+  let lastX = event.clientX;
+  let lastY = event.clientY;
+  let raf = 0;
   card.classList.add("is-dragging");
+  card.setPointerCapture?.(event.pointerId);
+  const apply = () => {
+    const x = startX + Math.round((lastX - originX) / colW);
+    const y = startY + Math.round((lastY - originY + window.scrollY - startScroll) / rowH);
+    patchChart(id, { x, y }, { pack: true });
+  };
+  const tick = () => {
+    raf = requestAnimationFrame(tick);
+    if (edgeScroll(lastY)) apply();
+  };
   const onMove = (ev) => {
-    const x = startX + Math.round((ev.clientX - originX) / colW);
-    const y = startY + Math.round((ev.clientY - originY) / rowH);
-    patchChart(id, { x, y });
+    lastX = ev.clientX;
+    lastY = ev.clientY;
+    apply();
   };
   const onUp = () => {
+    cancelAnimationFrame(raf);
     window.removeEventListener("pointermove", onMove);
     window.removeEventListener("pointerup", onUp);
     card.classList.remove("is-dragging");
     chartBusy = false;
-    persistChartLayout(separateCharts(chartLayout(), id), { rebuild: false });
+    persistChartLayout(packCharts(chartLayout(), id), { rebuild: false });
   };
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
+  raf = requestAnimationFrame(tick);
 }
 
 function startChartResize(event, id, axis) {
@@ -979,7 +1200,7 @@ function startChartResize(event, id, axis) {
     if (axis.includes("y")) {
       patch.h = Math.min(MAX_H, Math.max(MIN_H, startH + Math.round((ev.clientY - originY) / rowH)));
     }
-    patchChart(id, patch);
+    patchChart(id, patch, { pack: true });
     if (!lastStats) return;
     cancelAnimationFrame(chartResizeRaf);
     chartResizeRaf = requestAnimationFrame(() => renderCharts(lastStats));
@@ -989,7 +1210,7 @@ function startChartResize(event, id, axis) {
     window.removeEventListener("pointerup", onUp);
     card.classList.remove("is-resizing");
     chartBusy = false;
-    persistChartLayout(separateCharts(chartLayout(), id), { rebuild: false });
+    persistChartLayout(packCharts(chartLayout(), id), { rebuild: false });
     if (lastStats) renderCharts(lastStats);
   };
   window.addEventListener("pointermove", onMove);
@@ -1546,7 +1767,7 @@ function renderVoice() {
     return `${item.name || ""} ${item.value || ""}`.toLowerCase().includes(q);
   });
   if (!items.length) {
-    root.innerHTML = `<p class="empty">No voice variables.</p>`;
+    root.innerHTML = `<p class="empty">no vocab.</p>`;
     return;
   }
   if (!visible.length) {
@@ -1577,7 +1798,7 @@ function openVoiceEditor(index) {
     index >= 0
       ? { ...(library.variables || [])[index] }
       : { name: "", value: "" };
-  $("#editor-title").textContent = index >= 0 ? "edit voice" : "new voice";
+  $("#editor-title").textContent = index >= 0 ? "edit vocab" : "new vocab";
   $("#editor-delete").classList.toggle("hidden", index < 0);
   $("#editor-body").innerHTML = `
     <div class="form-stack">
@@ -2485,7 +2706,16 @@ function showView(name) {
   document.querySelectorAll("nav button").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.view === name);
   });
+  pulseNav(name);
   if (name === "overview") playOverviewMotion();
+}
+
+function pulseNav(name) {
+  const btn = document.querySelector(`nav button[data-view="${name}"]`);
+  if (!btn || document.documentElement.dataset.reduceMotion === "true") return;
+  btn.classList.remove("is-press");
+  void btn.offsetWidth;
+  btn.classList.add("is-press");
 }
 
 function editorOpen() {
@@ -2911,6 +3141,27 @@ function validateSyncDraft(draft) {
   return "";
 }
 
+function syncStep() {
+  const sync = settings.sync || {};
+  if (pendingPrivateKey) return "key";
+  if (syncWizard === "destination") return "destination";
+  if (Boolean(sync.needs_key) && !pendingPrivateKey) return "join";
+  if (Boolean(sync.needs_create) && !pendingPrivateKey) return "create";
+  if (sync.enabled || (sync.bucket || "").trim()) return "live";
+  return "idle";
+}
+
+function syncIntervalOptions(current) {
+  const allowed = settings.sync_intervals || [0, 300, 900, 1800, 3600];
+  const value = allowed.includes(Number(current)) ? Number(current) : 900;
+  return allowed
+    .map((sec) => {
+      const label = SYNC_INTERVAL_LABEL[sec] || `${sec / 60} minutes`;
+      return `<option value="${sec}" ${sec === value ? "selected" : ""}>${label}</option>`;
+    })
+    .join("");
+}
+
 function renderSync(data) {
   if (data) mergeSettings(data);
   renderAccount();
@@ -2927,7 +3178,8 @@ function renderSync(data) {
     what: { library: what.library !== false, stats: Boolean(what.stats) },
   };
   const existing = $("#sync-body");
-  const editing = syncEditing || syncEnableAfterSave;
+  const step = syncStep();
+  const editing = step === "destination" || (step === "live" && (syncEditing || syncEnableAfterSave));
   if (editing && existing && $("#sync-bucket")) {
     draft.provider = $("#sync-provider")?.value || draft.provider;
     draft.bucket = $("#sync-bucket").value;
@@ -2948,24 +3200,21 @@ function renderSync(data) {
   const selected = providers[draft.provider] || {};
   const canUse = selected.available !== false;
   const configured = Boolean((sync.bucket || "").trim());
-  const canToggleOn = canUse;
   const switchOn = Boolean(sync.enabled) || Boolean(syncEnableAfterSave);
-  const needsCreate = Boolean(sync.needs_create) && !pendingPrivateKey;
-  const needsJoin = Boolean(sync.needs_key) && !pendingPrivateKey;
-  if (needsJoin) importOpen = false;
   const keyText = pendingPrivateKey || revealedKey;
   const error = sync.last_error;
-  const phase = pendingPrivateKey
-    ? "wait"
-    : needsCreate
-      ? "create"
-      : needsJoin
-        ? "key"
-        : sync.enabled
-          ? "on"
-          : syncEnableAfterSave
+  const phase =
+    step === "key"
+      ? "wait"
+      : step === "create"
+        ? "create"
+        : step === "join"
+          ? "key"
+          : step === "destination"
             ? "setup"
-            : "off";
+            : sync.enabled
+              ? "on"
+              : "off";
   const phaseLabel =
     phase === "on"
       ? "On"
@@ -2989,79 +3238,79 @@ function renderSync(data) {
       return `<option value="${id}" ${draft.provider === id ? "selected" : ""} ${off ? "disabled" : ""}>${PROVIDER_LABEL[id]}${escapeHtml(note)}</option>`;
     })
     .join("");
-  if (!existing) return;
-  existing.innerHTML = `
-    <div class="sync-layout">
-      <header class="sync-hero">
-        <div>
-          <div class="sync-kicker"><span class="sync-dot ${phase}"></span>${phaseLabel}</div>
-          ${phaseMeta ? `<p>${escapeHtml(phaseMeta)}</p>` : ""}
+  const destFields = `<label>Provider
+          <select id="sync-provider">${providerOptions}</select>
+        </label>
+        <div class="sync-grid">
+          <label>Bucket<input id="sync-bucket" type="text" value="${escapeHtml(draft.bucket)}" placeholder="my-bucket" autocomplete="off" /></label>
+          <label>Folder<input id="sync-prefix" type="text" value="${escapeHtml(draft.prefix)}" placeholder="optional" autocomplete="off" /></label>
         </div>
-        ${
-          pendingPrivateKey
-            ? `<button type="button" class="primary" id="confirm-sync" ${savedKeyConfirm ? "" : "disabled"}>Start sync</button>`
-            : `<div class="sync-hero-actions">
+        <label class="${draft.provider === "azure" ? "" : "hidden"}" id="azure-account-field">Storage account<input id="sync-account" type="text" value="${escapeHtml(draft.account)}" placeholder="mystorageacct" autocomplete="off" /></label>
+        <label class="${draft.provider === "gcs" ? "" : "hidden"}" id="gcs-project-field">Project<input id="sync-project" type="text" value="${escapeHtml(draft.project)}" placeholder="optional" autocomplete="off" /></label>
+        ${syncValidateError ? `<p class="sync-note sync-error">${escapeHtml(syncValidateError)}</p>` : ""}`;
+  const saveLabel = step === "destination" ? "continue" : syncEnableAfterSave ? "Save and turn on" : "Save";
+  let heroActions = "";
+  if (step === "key") {
+    heroActions = `<button type="button" class="primary" id="confirm-sync" ${savedKeyConfirm ? "" : "disabled"}>Start sync</button>`;
+  } else if (step === "idle") {
+    heroActions = `<button type="button" class="primary" id="sync-setup">setup</button>`;
+  } else if (step === "live") {
+    heroActions = `<div class="sync-hero-actions">
                 <div class="sync-switch">
-                  <button type="button" class="switch" id="sync-toggle" aria-pressed="${switchOn ? "true" : "false"}" ${sync.enabled || canToggleOn ? "" : "disabled"} aria-label="Turn sync ${switchOn ? "off" : "on"}"><i></i></button>
+                  <button type="button" class="switch" id="sync-toggle" aria-pressed="${switchOn ? "true" : "false"}" ${sync.enabled || canUse ? "" : "disabled"} aria-label="Turn sync ${switchOn ? "off" : "on"}"><i></i></button>
                   <span>${switchOn ? "on" : "off"}</span>
                 </div>
                 <button type="button" class="ghost accent-btn" id="sync-now" ${sync.enabled ? "" : "disabled"}>sync now</button>
-              </div>`
-        }
-      </header>
-      ${
-        noneReady
-          ? `<aside class="notice" role="status">
-              <div>
-                <strong>No cloud CLI</strong>
-                <p>Install the AWS, Google Cloud, or Azure CLI.</p>
-              </div>
-            </aside>`
-          : error
-            ? `<aside class="notice notice-row" role="status">
-              <div>
-                <strong>Sync failed</strong>
-                <p>${escapeHtml(error.message || "")}</p>
-                ${error.details ? `<details><summary>Details</summary><pre>${escapeHtml(error.details)}</pre></details>` : ""}
-              </div>
-              ${error.kind === "auth" ? `<button type="button" class="primary" id="sync-sign-in">Sign in</button>` : ""}
-            </aside>`
-            : ""
-      }
-      ${
-        pendingPrivateKey
-          ? `<section class="sync-card sync-key-card">
+              </div>`;
+  }
+  let stepCard = "";
+  if (step === "key") {
+    stepCard = `<section class="sync-card sync-key-card">
               <h3>Private key</h3>
+              <p class="sync-note">Username ${usernameValue || "—"}</p>
               <textarea class="key-box" id="sync-key-view" readonly>${escapeHtml(keyText)}</textarea>
               <div class="sync-actions">
                 <button type="button" class="ghost" id="copy-key">Copy</button>
                 <label class="choice tight"><input type="checkbox" id="saved-key" ${savedKeyConfirm ? "checked" : ""} /> I saved this key</label>
               </div>
-            </section>`
-          : needsCreate
-            ? `<section class="sync-card sync-key-card">
+            </section>`;
+  } else if (step === "create") {
+    stepCard = `<section class="sync-card sync-key-card">
                 <h3>Username</h3>
                 <div class="sync-id-fields">
                   <input id="sync-username" type="text" maxlength="40" value="${usernameValue}" placeholder="username" autocomplete="off" />
                 </div>
                 <div class="sync-actions">
                   <button type="button" class="primary" id="sync-create">Create</button>
+                  <button type="button" id="sync-cancel">cancel</button>
                 </div>
-              </section>`
-            : needsJoin
-              ? `<section class="sync-card sync-key-card">
+              </section>`;
+  } else if (step === "join") {
+    stepCard = `<section class="sync-card sync-key-card">
                   <h3>Unlock</h3>
+                  <p class="sync-note">If this copy already has a name, that name replaces the one on this Mac.</p>
                   <div class="sync-id-fields">
                     <label>Username<input id="sync-username" type="text" maxlength="40" value="${usernameValue}" placeholder="username" autocomplete="off" /></label>
                     <label>Private key<textarea id="sync-private-key" class="key-box short" placeholder="Paste the private key"></textarea></label>
                   </div>
                   <div class="sync-actions">
                     <button type="button" class="primary" id="sync-join">Unlock</button>
+                    <button type="button" id="sync-cancel">cancel</button>
                   </div>
-                </section>`
-              : ""
-      }
-      <section class="sync-card sync-object ${editing ? "is-editing" : ""}">
+                </section>`;
+  }
+  let objectCard = "";
+  if (step === "destination") {
+    objectCard = `<section class="sync-card sync-object is-editing">
+        <header class="sync-card-head"><h3>Cloud</h3></header>
+        ${destFields}
+        <div class="sync-edit-actions">
+            <button type="button" id="sync-cancel">cancel</button>
+            <button type="button" class="primary" id="sync-save">${saveLabel}</button>
+          </div>
+      </section>`;
+  } else if (step === "live") {
+    objectCard = `<section class="sync-card sync-object ${editing ? "is-editing" : ""}">
         <header class="sync-card-head">
           <h3>Cloud</h3>
           ${
@@ -3075,16 +3324,7 @@ function renderSync(data) {
         </header>
         ${
           editing
-            ? `<label>Provider
-          <select id="sync-provider">${providerOptions}</select>
-        </label>
-        <div class="sync-grid">
-          <label>Bucket<input id="sync-bucket" type="text" value="${escapeHtml(draft.bucket)}" placeholder="my-bucket" autocomplete="off" /></label>
-          <label>Folder<input id="sync-prefix" type="text" value="${escapeHtml(draft.prefix)}" placeholder="optional" autocomplete="off" /></label>
-        </div>
-        <label class="${draft.provider === "azure" ? "" : "hidden"}" id="azure-account-field">Storage account<input id="sync-account" type="text" value="${escapeHtml(draft.account)}" placeholder="mystorageacct" autocomplete="off" /></label>
-        <label class="${draft.provider === "gcs" ? "" : "hidden"}" id="gcs-project-field">Project<input id="sync-project" type="text" value="${escapeHtml(draft.project)}" placeholder="optional" autocomplete="off" /></label>
-        ${syncValidateError ? `<p class="sync-note sync-error">${escapeHtml(syncValidateError)}</p>` : ""}`
+            ? destFields
             : configured
               ? `<dl class="sync-facts">
             <div><dt>Provider</dt><dd>${escapeHtml(PROVIDER_LABEL[draft.provider] || draft.provider)}</dd></div>
@@ -3096,6 +3336,10 @@ function renderSync(data) {
               : `<p class="sync-note">No destination</p>`
         }
         <div class="sync-compact">
+        <div class="sync-row">
+          <span class="sync-label">interval</span>
+          <select id="sync-interval">${syncIntervalOptions(sync.interval_sec)}</select>
+        </div>
         <div class="sync-row">
           <span class="sync-label">include</span>
           <div class="sync-chips">
@@ -3120,12 +3364,10 @@ function renderSync(data) {
                 : `<span class="sync-scope">${draft.keychain_scope === "icloud" ? "Other Macs" : "This Mac"}</span>`
             }
             ${
-              pendingPrivateKey || needsCreate || needsJoin
-                ? ""
-                : settings.has_private_key
-                  ? `<button type="button" class="ghost" id="reveal-key">${revealedKey ? "Hide" : "Show"}</button>
-                     <button type="button" class="ghost" id="import-toggle">${importOpen && !needsJoin ? "Hide paste" : "Paste"}</button>`
-                  : `<button type="button" class="ghost" id="import-toggle">${importOpen ? "Hide paste" : "Paste"}</button>`
+              settings.has_private_key
+                ? `<button type="button" class="ghost" id="reveal-key">${revealedKey ? "Hide" : "Show"}</button>
+                     <button type="button" class="ghost" id="import-toggle">${importOpen ? "Hide paste" : "Paste"}</button>`
+                : `<button type="button" class="ghost" id="import-toggle">${importOpen ? "Hide paste" : "Paste"}</button>`
             }
           </div>
         </div>
@@ -3136,7 +3378,7 @@ function renderSync(data) {
             : ""
         }
         ${
-          importOpen && !needsJoin && !needsCreate && !pendingPrivateKey
+          importOpen && !pendingPrivateKey
             ? `<textarea id="import-key" class="key-box short" placeholder="Paste the private key"></textarea>
                <div class="sync-actions"><button type="button" class="primary" id="import-key-btn">Save</button></div>`
             : ""
@@ -3145,12 +3387,44 @@ function renderSync(data) {
           editing
             ? `<div class="sync-edit-actions">
             <button type="button" id="sync-cancel">cancel</button>
-            <button type="button" class="primary" id="sync-save">${syncEnableAfterSave ? "Save and turn on" : "Save"}</button>
+            <button type="button" class="primary" id="sync-save">${saveLabel}</button>
           </div>`
             : ""
         }
         </div>
-      </section>
+      </section>`;
+  }
+  if (!existing) return;
+  existing.innerHTML = `
+    <div class="sync-layout">
+      <header class="sync-hero">
+        <div>
+          <div class="sync-kicker"><span class="sync-dot ${phase}"></span>${phaseLabel}</div>
+          ${phaseMeta ? `<p>${escapeHtml(phaseMeta)}</p>` : ""}
+        </div>
+        ${heroActions}
+      </header>
+      ${
+        noneReady
+          ? `<aside class="notice" role="status">
+              <div>
+                <strong>No cloud CLI</strong>
+                <p>Install the AWS, Google Cloud, or Azure CLI.</p>
+              </div>
+            </aside>`
+          : error
+            ? `<aside class="notice notice-row" role="status">
+              <div>
+                <strong>Sync failed</strong>
+                <p>${escapeHtml(error.message || "")}</p>
+                ${error.details ? `<details><summary>Details</summary><pre>${escapeHtml(error.details)}</pre></details>` : ""}
+              </div>
+              ${error.kind === "auth" ? `<button type="button" class="primary" id="sync-sign-in">Sign in</button>` : ""}
+            </aside>`
+            : ""
+      }
+      ${stepCard}
+      ${objectCard}
     </div>
   `;
   applySettingsAttention(sync);
@@ -3161,15 +3435,18 @@ function renderSync(data) {
 function bindSyncPane() {
   const stopEditing = () => {
     syncSaveGen += 1;
+    const step = syncStep();
     syncEditing = false;
     syncEnableAfterSave = false;
     syncValidateError = "";
+    syncWizard = step === "join" || step === "create" ? "destination" : "";
     renderSync();
   };
   const applyEnableResult = (data) => {
     syncEditing = false;
     syncEnableAfterSave = false;
     syncValidateError = "";
+    syncWizard = "";
     if (data.needs_create) {
       renderSync(data);
       return;
@@ -3202,6 +3479,7 @@ function bindSyncPane() {
       btn.textContent = "Checking…";
     }
     const gen = ++syncSaveGen;
+    const turnOn = syncWizard === "destination" || syncEnableAfterSave || settings.sync?.enabled;
     api("/api/sync/validate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3209,11 +3487,11 @@ function bindSyncPane() {
     })
       .then(() => {
         if (gen !== syncSaveGen) return;
-        if (syncEnableAfterSave || settings.sync?.enabled) {
+        if (turnOn) {
           return api("/api/sync/enable", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(draft),
+            body: JSON.stringify({ ...draft, username: settings.username || "" }),
           }).then((data) => {
             if (gen !== syncSaveGen) return;
             applyEnableResult(data);
@@ -3269,6 +3547,16 @@ function bindSyncPane() {
     syncEnableAfterSave = true;
     syncValidateError = "";
     renderSync();
+  });
+  $("#sync-setup")?.addEventListener("click", () => {
+    syncWizard = "destination";
+    syncEditing = false;
+    syncEnableAfterSave = false;
+    syncValidateError = "";
+    renderSync();
+  });
+  $("#sync-interval")?.addEventListener("change", (event) => {
+    savePrefs({ sync: { interval_sec: Number(event.target.value) } }).catch((err) => toast(err.message, "error"));
   });
   $("#sync-edit")?.addEventListener("click", () => {
     syncEditing = true;
@@ -3472,6 +3760,7 @@ function bindSettings() {
     syncEditing = false;
     syncEnableAfterSave = false;
     syncValidateError = "";
+    syncWizard = "";
     renderPersonalization();
     renderAccount();
     renderModel();
@@ -3484,23 +3773,24 @@ function bindSettings() {
       .then((data) => renderSync(data))
       .catch((err) => toast(err.message));
     $("#settings").showModal();
-    if (modelPaneOpen()) syncModelTest(true);
+    $("#open-settings").classList.add("is-open");
+    setPageFreeze(true);
+    if ($("#open-settings").classList.contains("has-notice")) showSettings("sync");
+    else if (modelPaneOpen()) syncModelTest(true);
   });
   $("#settings-close").addEventListener("click", () => $("#settings").close());
   $("#settings").addEventListener("close", () => {
+    $("#open-settings").classList.remove("is-open");
+    setPageFreeze(false);
     syncModelTest(false);
+    const el = $("#toast");
+    if (el?.classList.contains("is-on")) placeToast(el);
     refresh().catch((err) => toast(err.message));
   });
   $("#settings-nav").addEventListener("click", (event) => {
     const btn = event.target.closest("[data-settings-pane]");
     if (!btn) return;
-    document.querySelectorAll("[data-settings-pane]").forEach((el) => {
-      el.classList.toggle("active", el === btn);
-    });
-    document.querySelectorAll(".settings-pane").forEach((pane) => {
-      pane.classList.toggle("hidden", pane.id !== `pane-${btn.dataset.settingsPane}`);
-    });
-    syncModelTest(btn.dataset.settingsPane === "model");
+    showSettings(btn.dataset.settingsPane);
   });
   $("#theme-picks").addEventListener("click", (event) => {
     const btn = event.target.closest("[data-theme]");
@@ -3586,6 +3876,7 @@ function bindSettings() {
     const want = sw.getAttribute("aria-pressed") !== "true";
     if (want) {
       lockDrafting = true;
+      lockChangingPin = false;
       renderLockFields();
       return;
     }
@@ -3593,6 +3884,7 @@ function bindSettings() {
       api("/api/lock/disable", { method: "POST" })
         .then((data) => {
           lockDrafting = false;
+          lockChangingPin = false;
           applyLock(data);
           toast("Lock is off");
         })
@@ -3603,27 +3895,40 @@ function bindSettings() {
       return;
     }
     lockDrafting = false;
+    lockChangingPin = false;
+    renderLockFields();
+  });
+  $("#lock-change")?.addEventListener("click", () => {
+    lockChangingPin = true;
+    renderLockFields();
+    $("#lock-pin-old")?.focus();
+  });
+  $("#lock-cancel-change")?.addEventListener("click", () => {
+    lockChangingPin = false;
+    clearLockPinFields();
     renderLockFields();
   });
   $("#lock-save")?.addEventListener("click", () => {
-    const pin = $("#lock-pin")?.value || "";
-    const again = $("#lock-pin-again")?.value || "";
+    const changing = lockChangingPin;
+    const pin = changing ? $("#lock-pin-new")?.value || "" : $("#lock-pin")?.value || "";
+    const again = changing ? $("#lock-pin-confirm")?.value || "" : $("#lock-pin-again")?.value || "";
     if (pin !== again) {
       toast("PINs do not match.", "error");
       return;
     }
+    const body = { pin, timeout_sec: Number($("#lock-timeout")?.value || 900) };
+    if (changing) body.current = $("#lock-pin-old")?.value || "";
     api("/api/lock/setup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pin, timeout_sec: Number($("#lock-timeout")?.value || 900) }),
+      body: JSON.stringify(body),
     })
       .then((data) => {
+        lockDrafting = false;
+        lockChangingPin = false;
         applyLock(data);
-        const a = $("#lock-pin");
-        const b = $("#lock-pin-again");
-        if (a) a.value = "";
-        if (b) b.value = "";
-        toast("Lock is on");
+        clearLockPinFields();
+        toast(changing ? "PIN saved" : "Lock is on");
       })
       .catch((err) => toast(err.message, "error"));
   });

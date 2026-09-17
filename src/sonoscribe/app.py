@@ -274,6 +274,7 @@ class App:
             self._dashboard_item.setEnabled_(True)
         _log(f"Dashboard {server.url}")
         threading.Thread(target=self._pull_library, daemon=True).start()
+        threading.Thread(target=self._sync_loop, daemon=True).start()
 
     def _pull_library(self) -> None:
         from sonoscribe.sync import SyncError, pull
@@ -285,6 +286,33 @@ class App:
             return
         if result.get("changed"):
             _log("Sync: library updated from the cloud")
+
+    def _sync_loop(self) -> None:
+        from sonoscribe.settings import load_settings
+        from sonoscribe.sync import SyncError, pull
+
+        waited = 0
+        while not self._quitting:
+            time.sleep(5)
+            sync = load_settings().get("sync") or {}
+            try:
+                interval = int(sync.get("interval_sec") or 0)
+            except (TypeError, ValueError):
+                interval = 0
+            if not sync.get("enabled") or interval <= 0:
+                waited = 0
+                continue
+            waited += 5
+            if waited < interval:
+                continue
+            waited = 0
+            try:
+                result = pull()
+            except SyncError as exc:
+                _log(f"Sync: {exc.message}")
+                continue
+            if result.get("changed"):
+                _log("Sync: library updated from the cloud")
 
     def _open_dashboard(self) -> None:
         if self._dashboard is None:

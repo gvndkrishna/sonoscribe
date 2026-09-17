@@ -188,6 +188,10 @@ class LockController:
         cfg = lock_settings()
         if cfg["enabled"]:
             self.require_unlocked(token)
+            current = str(body.get("current") or "")
+            blob = get_lock_secret() or ""
+            if not verify_pin(current, blob):
+                raise LockError("Wrong PIN.", 401, "pin")
         pin = str(body.get("pin") or "")
         if not pin_ok(pin):
             raise LockError("PIN must be 4 digits.", 400, "pin")
