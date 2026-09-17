@@ -20,7 +20,7 @@ from sonoscribe.catalog import (
 
 
 def test_normalize_phrase_strips_punctuation() -> None:
-    assert normalize_phrase("GitHub Android.") == "github android"
+    assert normalize_phrase("GitHub Docs.") == "github docs"
     assert normalize_phrase("  enter  ") == "enter"
 
 
@@ -31,13 +31,11 @@ def test_enter_and_aliases_match_seed() -> None:
     assert match_utterance("delete the last word", library).command["id"] == "kbd-delete-word"
 
 
-def test_website_aliases_match_android() -> None:
+def test_empty_library_has_no_android_command() -> None:
     library = empty_library()
-    for phrase in ("android", "github android", "git hub android", "GitHub Android."):
-        hit = match_utterance(phrase, library)
-        assert hit.kind == "command"
-        assert hit.command["type"] == "website"
-        assert "sqx-core-android" in hit.command["url"]
+    assert match_utterance("android", library).kind == "unknown"
+    assert all(item.get("id") != "web-android" for item in library["commands"])
+    assert all("sqx-core-android" not in str(item.get("url") or "") for item in library["commands"])
 
 
 def test_fluent_enter_is_unknown() -> None:
@@ -130,29 +128,26 @@ def test_website_url_must_be_http() -> None:
 
 
 def test_github_map_becomes_website_commands() -> None:
-    commands = commands_from_github_map(
+    commands = commands_from_github_map({"docs": "https://example.com/docs"})
+    assert commands[0]["id"] == "web-docs"
+    assert "git hub docs" in commands[0]["phrases"]
+    assert commands_from_github_map(
         {"android": "https://github.com/SquareX-Backup/sqx-core-android"}
-    )
-    assert commands[0]["id"] == "web-android"
-    assert "git hub android" in commands[0]["phrases"]
+    ) == []
 
 
 def test_load_migrates_legacy_routines_json(tmp_path, monkeypatch) -> None:
     legacy = tmp_path / "routines.json"
-    legacy.write_text(
-        json.dumps(
-            {"github": {"android": "https://github.com/SquareX-Backup/sqx-core-android"}}
-        )
-    )
+    legacy.write_text(json.dumps({"github": {"docs": "https://example.com/docs"}}))
     library_file = tmp_path / "library.json"
     monkeypatch.setenv("SONOSCRIBE_LIBRARY", str(library_file))
     monkeypatch.setenv("SONOSCRIBE_ROUTINES", str(legacy))
     library = load_library()
-    android = next(item for item in library["commands"] if item["id"] == "web-android")
-    assert android["type"] == "website"
-    assert "github android" in android["phrases"]
+    docs = next(item for item in library["commands"] if item["id"] == "web-docs")
+    assert docs["type"] == "website"
+    assert "github docs" in docs["phrases"]
     assert library_file.exists()
-    assert json.loads(legacy.read_text())["github"]["android"]
+    assert json.loads(legacy.read_text())["github"]["docs"]
 
 
 def test_app_command_accepts_bundle_id_only() -> None:
@@ -310,8 +305,28 @@ def test_load_creates_seed_when_missing(tmp_path, monkeypatch) -> None:
     library = load_library()
     ids = {item["id"] for item in library["commands"]}
     assert "kbd-enter" in ids
-    assert "web-android" in ids
+    assert "web-android" not in ids
     assert library["routines"] == []
+
+
+def test_load_strips_removed_android_command(tmp_path, monkeypatch) -> None:
+    library_file = tmp_path / "library.json"
+    monkeypatch.setenv("SONOSCRIBE_LIBRARY", str(library_file))
+    payload = empty_library()
+    payload["commands"] = list(payload["commands"]) + [
+        {
+            "id": "web-android",
+            "type": "website",
+            "name": "Android repo",
+            "phrases": ["android"],
+            "url": "https://github.com/SquareX-Backup/sqx-core-android",
+        }
+    ]
+    library_file.write_text(json.dumps(payload), encoding="utf-8")
+    library = load_library()
+    assert all(item.get("id") != "web-android" for item in library["commands"])
+    saved = json.loads(library_file.read_text(encoding="utf-8"))
+    assert all(item.get("id") != "web-android" for item in saved["commands"])
 
 
 def test_command_by_id_uses_index() -> None:

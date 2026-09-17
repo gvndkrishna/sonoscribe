@@ -56,7 +56,6 @@ SYSTEM_ACTIONS = (
 )
 RESERVED_PREFIX = "routine"
 _ENV_LIBRARY = "SONOSCRIBE_LIBRARY"
-_ANDROID_URL = "https://github.com/SquareX-Backup/sqx-core-android"
 
 DEFAULT_COMMANDS: list[dict[str, Any]] = [
     {
@@ -103,13 +102,6 @@ DEFAULT_COMMANDS: list[dict[str, Any]] = [
         "name": "Scratch that",
         "phrases": ["scratch that", "undo that", "delete that"],
         "action": SCRATCH,
-    },
-    {
-        "id": "web-android",
-        "type": "website",
-        "name": "Android repo",
-        "phrases": ["android", "github android", "git hub android"],
-        "url": _ANDROID_URL,
     },
 ]
 
@@ -789,13 +781,15 @@ def commands_from_github_map(github: dict[str, str]) -> list[dict[str, Any]]:
         url = str(raw_url).strip()
         if not alias or not _valid_http_url(url):
             continue
+        if url.rstrip("/") in _REMOVED_COMMAND_URLS:
+            continue
         slug = alias.replace(" ", "-")
         phrases = [alias, f"github {alias}", f"git hub {alias}"]
         unique: list[str] = []
         for phrase in phrases:
             if phrase not in unique:
                 unique.append(phrase)
-        name = "Android repo" if alias == "android" else alias.title()
+        name = alias.title()
         commands.append(
             {
                 "id": f"web-{slug}",
@@ -827,6 +821,50 @@ def _read_github_map(path: Path) -> dict[str, str] | None:
         if alias and url:
             out[alias] = url
     return out
+
+
+_REMOVED_COMMAND_IDS = frozenset({"web-android"})
+_REMOVED_COMMAND_URLS = frozenset(
+    {
+        "https://github.com/SquareX-Backup/sqx-core-android",
+    }
+)
+
+
+def _drop_removed_builtins(library: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    commands = list(library.get("commands") or [])
+    kept: list[dict[str, Any]] = []
+    dropped_ids: set[str] = set()
+    for item in commands:
+        command_id = str(item.get("id") or "")
+        url = str(item.get("url") or "").rstrip("/")
+        if command_id in _REMOVED_COMMAND_IDS or url in _REMOVED_COMMAND_URLS:
+            if command_id:
+                dropped_ids.add(command_id)
+            continue
+        kept.append(item)
+    routines = list(library.get("routines") or [])
+    rewritten: list[dict[str, Any]] = []
+    routines_changed = False
+    for routine in routines:
+        steps = [
+            step
+            for step in (routine.get("steps") or [])
+            if str(step.get("command_id") or "") not in dropped_ids
+        ]
+        if len(steps) != len(routine.get("steps") or []):
+            routines_changed = True
+            routine = {**routine, "steps": steps}
+        rewritten.append(routine)
+    if not dropped_ids and not routines_changed:
+        return library, False
+    next_library = {
+        **library,
+        "commands": kept,
+        "routines": rewritten,
+        "variables": list(library.get("variables") or []),
+    }
+    return validate_library(next_library), True
 
 
 def remap_device_id(old_id: str, new_id: str) -> bool:
@@ -881,6 +919,9 @@ def _load_library_locked(target: Path) -> dict[str, Any]:
             library = validate_library(data)
         except (OSError, json.JSONDecodeError, LibraryError):
             library = empty_library()
+        library, dropped = _drop_removed_builtins(library)
+        if dropped:
+            return _write_library_locked(library, target)
         fresh = _file_stamp(target) or stamp or (0, 0)
         _store_file_cache(target, fresh, library)
         return library
