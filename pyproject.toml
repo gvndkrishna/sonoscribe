@@ -1,0 +1,44 @@
+[project]
+name = "sonoscribe"
+version = "0.1.0"
+description = "Hold Fn to dictate with on-device Whisper. Hold Cmd with Fn for commands."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Govind Krishna" }]
+requires-python = ">=3.11"
+dependencies = [
+    "mlx>=0.22.0",
+    "mlx-whisper>=0.4.0",
+    "numpy>=1.26",
+    "sounddevice>=0.5.0",
+    "pyobjc-framework-Cocoa>=10.0",
+    "pyobjc-framework-Quartz>=10.0",
+    "pyobjc-framework-ApplicationServices>=10.0",
+    "truststore>=0.10.0",
+    "cryptography>=44.0.0",
+    "pyobjc-framework-Security>=10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyinstaller>=6.10",
+    "pytest>=8.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/gvndkrishna/sonoscribe"
+Issues = "https://github.com/gvndkrishna/sonoscribe/issues"
+
+[project.scripts]
+sonoscribe = "sonoscribe.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/sonoscribe/dashboard/static" = "sonoscribe/dashboard/static"

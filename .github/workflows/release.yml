@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Version
+        run: echo "SONOSCRIBE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - run: uv sync --extra dev --frozen
+      - run: uv run pytest -q
+      - run: uv run pyinstaller sonoscribe.spec --noconfirm
+      - name: Package
+        run: |
+          test -d dist/Sonoscribe.app
+          ditto -c -k --keepParent dist/Sonoscribe.app dist/Sonoscribe-macos-arm64.zip
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/Sonoscribe-macos-arm64.zip
+            LICENSE
+          generate_release_notes: true
+          fail_on_unmatched_files: true
