@@ -10,7 +10,7 @@ uv run pytest
 
 ## Pull requests
 
-Open PRs against `main`. Keep the change scoped. Match the surrounding style. Do not commit secrets, Keychain material, or local `library.json` / `stats.json` / `settings.json`.
+Open PRs against `main`. Keep the change scoped. Match the surrounding style. Dashboard changes follow [DESIGN.md](DESIGN.md). Do not commit secrets, Keychain material, or local `library.json` / `stats.json` / `settings.json`.
 
 By submitting a contribution you license it under [GPL-3.0-only](LICENSE), the same terms as this repository.
 
