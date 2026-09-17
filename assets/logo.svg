@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" role="img" aria-label="sonoscribe ss–1">
+  <rect width="960" height="540" fill="#0f0e12"/>
+  <g
+    fill="none"
+    stroke="#f6f8f7"
+    stroke-width="5"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    transform="translate(168 186)"
+  >
+    <path d="M36 148 C4 136 2 100 36 84 C70 68 68 30 36 18"/>
+    <path d="M188 18 C220 30 222 68 188 84 C154 100 156 136 188 148"/>
+  </g>
+  <line
+    x1="332"
+    y1="270"
+    x2="392"
+    y2="270"
+    stroke="#b7a56a"
+    stroke-width="4"
+    stroke-linecap="butt"
+  />
+  <text
+    x="432"
+    y="284"
+    fill="#f6f8f7"
+    font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+    font-weight="300"
+    font-size="42"
+    letter-spacing="7"
+  >sonoscribe</text>
+  <text
+    x="778"
+    y="318"
+    text-anchor="end"
+    fill="#8a8a8e"
+    font-family="SF Mono, ui-monospace, Menlo, monospace"
+    font-weight="400"
+    font-size="11"
+    letter-spacing="3"
+  >ss–1</text>
+</svg>

@@ -10,6 +10,18 @@ def frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
+def package_dir() -> Path:
+    if frozen():
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            return Path(meipass) / "sonoscribe"
+    return Path(__file__).resolve().parent
+
+
+def resource_path(*parts: str) -> Path:
+    return package_dir() / "resources" / Path(*parts)
+
+
 def in_app_bundle() -> bool:
     """True when this process is the executable inside a .app/Contents/MacOS tree."""
     try:

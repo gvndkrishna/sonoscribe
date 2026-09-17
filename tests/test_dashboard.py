@@ -72,6 +72,9 @@ def test_static_assets_exist() -> None:
     assert "data-remove-chart" in js
     assert "add-chart" in js
     html = (root / "index.html").read_text(encoding="utf-8")
+    assert (root / "favicon.svg").is_file()
+    assert (root / "favicon.png").is_file()
+    assert 'rel="icon"' in html
     assert "open-settings" in html
     assert 'id="settings"' in html
     assert 'id="stats-device"' in html
