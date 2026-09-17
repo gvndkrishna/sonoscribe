@@ -120,22 +120,49 @@ def test_static_assets_exist() -> None:
     assert "model-test-meta" in css
     assert "chart-resize" in css
     assert "chart-add-menu" in css
-    assert "--canvas: #f2f2f7" in css
-    assert "--panel: #fafafa" in css
+    assert "--canvas: #e4e4ea" in css
+    assert "--panel: #ececf1" in css
     assert "--panel: #ffffff" not in css
     assert "--status-on" in css
+    assert "--accent-glow" in css
+    assert "--light-core" in css
+    assert "--light-wash" in css
+    assert ".masthead::before" not in css
+    assert ".masthead::after" not in css
+    assert "--mast: 48px" in css
     assert ".sync-dot.off" in css
     assert "settings-mark" in css
     assert "page-in" in css
     assert ".glass-fill" in css
     assert ".glass-box" in css
     assert ".glass-down" in css
+    assert "--glass-bleed: 36px" in css
     assert "backdrop-filter" in css
     assert 'class="masthead glass glass-down"' in html
+    assert "hold <kbd>fn</kbd> to dictate" not in html
+    assert "grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr)" in css
+    assert 'data-view="overview"' in html
+    assert "nav button svg" in css
+    assert "nav button:hover span" in css
+    assert "flex: 0 0 44px" in css
+    assert "width: 4px" in css
+    assert "pulseNav" in js
+    assert "@keyframes nav-wave" in css
+    assert "open-settings" in html
+    assert 'id="open-settings"' in html
+    assert "classList.add(\"is-open\")" in js
     assert 'class="glass-fill"' in html
     assert 'id="settings" class="glass glass-box"' in html
     assert 'id="editor" class="glass glass-box"' in html
     assert "glass-copy" in html
+    assert 'id="toast"' in html
+    assert 'id="toast-kicker"' in html
+    assert 'popover="manual"' in html
+    assert "placeToast" in js
+    assert "in-overlay" in js
+    assert "toast-up" in css
+    assert "toast-down" in css
+    assert "html[data-reduce-motion=\"true\"] #toast.is-on" in css
     assert 'id="chart-add-items"' in html
     assert "fill-arc" in css
     assert "meter-fill" in css
@@ -152,14 +179,34 @@ def test_static_assets_exist() -> None:
     assert "private_mode" in js
     assert 'id="dashboard-lock"' in html
     assert 'id="lock-gate"' in html
+    assert "setLockScroll" in js
+    assert "setPageFreeze" in js
+    assert "packCharts" in js
+    assert "edgeScroll" in js
+    assert "html.is-locked" in css
+    assert "html.is-frozen" in css
+    assert "html.is-locked .shell" in css
+    assert "#lock-gate:not([open])" in css
+    assert "#lock-gate.lock-full[open]" in css
     assert 'id="reveal-commands"' in html
     assert 'id="reveal-routines"' in html
     assert 'id="lock-timeout"' in html
+    assert 'id="lock-save"' in html
+    assert 'id="lock-now"' in html
+    assert 'id="lock-change"' in html
+    assert 'id="lock-pin-fields"' in html
+    assert 'id="lock-change-fields"' in html
+    assert 'id="lock-pin-old"' in html
+    assert 'id="lock-pin-new"' in html
+    assert 'id="lock-pin-confirm"' in html
+    assert 'id="lock-cancel-change"' in html
     assert "/api/lock/unlock" in js
     assert "/api/lock/confirm" in js
     assert "Touch ID" not in html
     assert "unlock-touch" not in js
     assert 'data-view="voice"' in html
+    assert ">vocab</span>" in html
+    assert "<h1>vocab</h1>" in html
     assert 'id="view-voice"' in html
     assert 'id="add-voice"' in html
     assert 'id="reveal-voice"' in html
@@ -167,6 +214,16 @@ def test_static_assets_exist() -> None:
     assert 'text: "Text"' in js
     assert "openVoiceEditor" in js
     assert "variables" in js
+    assert "lockSaveVisible" in js
+    assert "lockNowVisible" in js
+    assert "syncReady" in js
+    assert "showSettings" in js
+    assert "sync-setup" in js
+    assert "sync-interval" in js
+    assert "syncWizard" in js
+    assert 'data-settings-pane="sync"' in html
+    assert 'aria-disabled="true"' in html
+    assert "If this copy already has a name" in js
 
 
 def test_library_roundtrip(tmp_path, monkeypatch) -> None:
@@ -296,6 +353,17 @@ def test_library_roundtrip(tmp_path, monkeypatch) -> None:
         assert prefs["theme"] == "light"
         assert prefs["reduce_motion"] is False
         assert prefs["private_mode"] is True
+        assert prefs["sync"]["interval_sec"] == 900
+        assert prefs["sync_intervals"] == [0, 300, 900, 1800, 3600]
+        request = Request(
+            server.url + "api/settings",
+            data=json.dumps({"sync": {"interval_sec": 300}}).encode(),
+            method="PUT",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(request) as response:
+            interval_prefs = json.loads(response.read())
+        assert interval_prefs["sync"]["interval_sec"] == 300
         assert prefs["model"] == "large-v3-turbo"
         assert any(item["id"] == "small" for item in prefs["models"])
         assert prefs["accents"] == ["blue", "purple", "amber", "teal", "gray"]

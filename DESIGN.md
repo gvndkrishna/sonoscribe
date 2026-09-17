@@ -13,16 +13,19 @@ Dashboard UI. Tokens and components live in `src/sonoscribe/dashboard/static/sty
 
 Use CSS variables. Do not introduce one-off hex in new UI.
 
+Accent is a light, not a paint fill. `--accent` is the tube. `--light-core` is a slightly hotter filament. `--light-wash` is a short, dim throw. Illumination stays quiet: no neon bloom, no outer glow on buttons or chips.
+
 | Token | Role |
 | --- | --- |
 | `--ink` / `--muted` | Text |
 | `--canvas` / `--panel` | Page / raised surface |
 | `--line` / `--hairline` / `--stroke` | Rules |
 | `--accent` / `--accent-ink` | User accent (amber default) |
-| `--status-on` / `--status-off` / `--status-wait` | Status, muted not traffic-light |
+| `--light-core` / `--light-wash` | Emitter and falloff |
+| `--status-on` / `--status-off` / `--status-wait` | Status lamps |
 | `--type-*` | Command type marks |
 
-Themes: `html[data-theme="light"|"dark"]`. Accents: `html[data-accent]`. Check both themes.
+Themes: `html[data-theme="light"|"dark"]`. Accents: `html[data-accent]`. Check both themes. Light uses muted gray surfaces.
 
 ## Shape
 
@@ -39,18 +42,19 @@ Themes: `html[data-theme="light"|"dark"]`. Accents: `html[data-accent]`. Check b
 </div>
 ```
 
-- `.glass-down` — sticky masthead (blur bleeds below)
+- `.glass-down` — sticky masthead. Barely-there frost, strongest in the bar.
 - `.glass-box` — dialogs and menus
 - Write text into `.glass-copy`, never `innerHTML` on the glass root
 - `html[data-reduce-motion="true"]` turns glass into `--glass-solid` and drops motion
 
 ## Layout
 
-- Sticky masthead, `overflow-x: clip` on the document
+- Sticky masthead (~48px): wordmark left, icon views centered, gear right. A 4px square marks the active view. Labels overlay below on hover. Gear turns 90° while settings is open.
+- `overflow-x: clip` on the document
 - Page heads: `.unit` (`01 / library`) then lowercase `h1`
 - Primary actions: `.icon-btn`. Text actions: `.text-btn`
-- Filters and nav are unstyled text, active = ink + underline
+- Overview charts pack into open holes. Drag a tile to the top or bottom of the viewport to scroll. Settings freezes page scroll.
 
 ## Motion
 
-Honor `data-reduce-motion`. Prefer CSS; keep transitions short. No decorative animation on charts or meters.
+Honor `data-reduce-motion`. Prefer CSS; keep transitions short. No decorative animation on charts or meters. Nav icons play a short press motion. Nav labels fade in below the icon on hover.

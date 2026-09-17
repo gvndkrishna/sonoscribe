@@ -24,6 +24,7 @@ def test_enable_creates_key_and_waits(monkeypatch) -> None:
     assert "BEGIN PRIVATE KEY" in result["private_key"]
     assert result["needs_confirm"] is True
     assert load_settings()["sync"]["enabled"] is False
+    assert load_settings()["sync"]["interval_sec"] == 900
 
 
 def test_confirm_pushes_encrypted_library(tmp_path, monkeypatch) -> None:
@@ -309,6 +310,25 @@ def test_join_rejects_wrong_username(monkeypatch) -> None:
         assert "username" in exc.message.lower()
     assert load_settings()["sync"]["enabled"] is False
     assert load_settings()["username"] != "othername"
+
+
+def test_join_overwrites_local_username_with_bucket_name(monkeypatch) -> None:
+    from sonoscribe.sync.service import join
+
+    update_settings({"username": "desk"})
+    private_pem, public_pem = generate_keypair()
+    remote = _remote_copy(
+        public_pem,
+        {"v": 2, "username": "studio", "devices": [], "commands": [], "routines": [], "stats": {}},
+    )
+    _ready_providers(monkeypatch)
+    monkeypatch.setattr("sonoscribe.sync.service.download", lambda _dest: json.dumps(remote).encode())
+    monkeypatch.setattr("sonoscribe.sync.service.upload", lambda _dest, _payload: None)
+    enable({"provider": "aws", "bucket": "demo"})
+    assert load_settings()["username"] == "desk"
+    joined = join({"username": "studio", "private_key": private_pem})
+    assert joined["sync"]["enabled"] is True
+    assert load_settings()["username"] == "studio"
 
 
 def test_join_same_serial_is_this_device(monkeypatch) -> None:
