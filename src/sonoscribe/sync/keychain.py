@@ -9,6 +9,8 @@ SERVICE = "sonoscribe.sync"
 ACCOUNT = "private-key"
 LOCK_SERVICE = "sonoscribe.lock"
 LOCK_ACCOUNT = "unlock"
+SCOUT_SERVICE = "sonoscribe.scout"
+_LEGACY_TASK_SERVICE = "sonoscribe.tasks"
 _ERR_MISSING_ENTITLEMENT = -34018
 _icloud_ok: bool | None = None
 
@@ -28,6 +30,7 @@ class MemoryKeychain:
         self.pem: str | None = None
         self.scope: str = "local"
         self.lock_blob: str | None = None
+        self.scout_keys: dict[str, str] = {}
 
     def get(self) -> str | None:
         return self.pem
@@ -47,6 +50,15 @@ class MemoryKeychain:
 
     def delete_lock(self) -> None:
         self.lock_blob = None
+
+    def get_scout(self, account: str) -> str | None:
+        return self.scout_keys.get(account)
+
+    def set_scout(self, account: str, secret: str) -> None:
+        self.scout_keys[account] = secret
+
+    def delete_scout(self, account: str) -> None:
+        self.scout_keys.pop(account, None)
 
 
 class SecurityKeychain:
@@ -107,6 +119,34 @@ class SecurityKeychain:
             return
         if status not in {0, _const("not_found")}:
             raise KeychainError(_status_message("update", status))
+
+    def get_scout(self, account: str) -> str | None:
+        for query in (_scout_lookup_query(account), _scout_lookup_query(account, _LEGACY_TASK_SERVICE)):
+            status, data = _copy(query)
+            if status in {_const("not_found"), _ERR_MISSING_ENTITLEMENT}:
+                continue
+            if status != 0:
+                raise KeychainError(_status_message("read", status))
+            secret = _decode_secret(data)
+            if secret:
+                return secret
+        return None
+
+    def set_scout(self, account: str, secret: str) -> None:
+        self.delete_scout(account)
+        status, _result = _add(_scout_item_attrs(account, secret))
+        if status != 0:
+            raise KeychainError(_status_message("save", status))
+        if not self.get_scout(account):
+            raise KeychainError("Keychain accepted the key, but this Mac could not read it back.")
+
+    def delete_scout(self, account: str) -> None:
+        for query in (_scout_base_query(account), _scout_base_query(account, _LEGACY_TASK_SERVICE)):
+            status = _delete(query)
+            if status == _ERR_MISSING_ENTITLEMENT:
+                continue
+            if status not in {0, _const("not_found")}:
+                raise KeychainError(_status_message("update", status))
 
 
 _store: KeychainStore | None = None
@@ -183,6 +223,36 @@ def delete_lock_secret() -> None:
         deleter()
 
 
+def get_scout_key(account: str) -> str | None:
+    getter = getattr(_backend(), "get_scout", None)
+    if getter is None:
+        return None
+    blob = getter(account)
+    if not blob or not str(blob).strip():
+        return None
+    return str(blob)
+
+
+def set_scout_key(account: str, secret: str) -> None:
+    text = secret.strip()
+    if not text:
+        raise KeychainError("Key is empty.")
+    setter = getattr(_backend(), "set_scout", None)
+    if setter is None:
+        raise KeychainError("Scout key storage is unavailable.")
+    setter(account, text)
+
+
+def delete_scout_key(account: str) -> None:
+    deleter = getattr(_backend(), "delete_scout", None)
+    if deleter is not None:
+        deleter(account)
+
+
+def has_scout_key(account: str) -> bool:
+    return get_scout_key(account) is not None
+
+
 def _backend() -> KeychainStore:
     global _store
     if _store is not None:
@@ -217,6 +287,36 @@ def _lock_lookup_query() -> dict[Any, Any]:
         _const("return_data"): True,
         _const("match_limit"): _const("match_one"),
     }
+
+
+def _scout_base_query(account: str, service: str = SCOUT_SERVICE) -> dict[Any, Any]:
+    return {
+        _const("class"): _const("generic"),
+        _const("service"): service,
+        _const("account"): account,
+    }
+
+
+def _scout_lookup_query(account: str, service: str = SCOUT_SERVICE) -> dict[Any, Any]:
+    return {
+        **_scout_base_query(account, service),
+        _const("return_data"): True,
+        _const("match_limit"): _const("match_one"),
+    }
+
+
+def _scout_item_attrs(account: str, secret: str) -> dict[Any, Any]:
+    attrs: dict[Any, Any] = {
+        _const("class"): _const("generic"),
+        _const("service"): SCOUT_SERVICE,
+        _const("account"): account,
+        _const("label"): f"Sonoscribe scout {account}",
+        _const("value"): secret.encode("utf-8"),
+        _const("accessible"): _const("this_device"),
+    }
+    if _const("synchronizable") is not None:
+        attrs[_const("synchronizable")] = False
+    return attrs
 
 
 def _lock_item_attrs(blob: str) -> dict[Any, Any]:

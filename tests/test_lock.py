@@ -157,6 +157,29 @@ def test_lock_setup_unlock_wrong_pin_and_timeout() -> None:
         server.stop()
 
 
+def test_auto_lock_never_keeps_session() -> None:
+    stats = StatsStore()
+    server = DashboardServer(stats, port=0)
+    clock = {"t": 0.0}
+    server.lock = LockController(clock=lambda: clock["t"])
+    server.start()
+    try:
+        status, body = _call(server.url + "api/lock/setup", "POST", {"pin": "1234", "timeout_sec": 0})
+        assert status == 200
+        assert body["timeout_sec"] == 0
+        token = body["token"]
+        status, body = _call(server.url + "api/library", token=token)
+        assert status == 200
+        clock["t"] = 10_000
+        status, body = _call(server.url + "api/library", token=token)
+        assert status == 200
+        status, body = _call(server.url + "api/lock", "PUT", {"timeout_sec": 0}, token=token)
+        assert status == 200
+        assert body["timeout_sec"] == 0
+    finally:
+        server.stop()
+
+
 def test_username_and_sync_enable_require_confirm() -> None:
     stats = StatsStore()
     server = DashboardServer(stats, port=0)
@@ -266,6 +289,27 @@ def test_change_pin_requires_current(tmp_path) -> None:
         status, body = _call(server.url + "api/lock/unlock", "POST", {"pin": "1234"})
         assert status == 401
         status, body = _call(server.url + "api/lock/unlock", "POST", {"pin": "5678"})
+        assert status == 200
+    finally:
+        server.stop()
+
+
+def test_disable_requires_pin() -> None:
+    stats = StatsStore()
+    server = DashboardServer(stats, port=0)
+    server.start()
+    try:
+        status, body = _call(server.url + "api/lock/setup", "POST", {"pin": "1234"})
+        token = body["token"]
+        status, body = _call(server.url + "api/lock/disable", "POST", {}, token=token)
+        assert status == 401
+        assert body["code"] == "pin"
+        status, body = _call(server.url + "api/lock/disable", "POST", {"pin": "0000"}, token=token)
+        assert status == 401
+        status, body = _call(server.url + "api/lock/disable", "POST", {"pin": "1234"}, token=token)
+        assert status == 200
+        assert body["enabled"] is False
+        status, body = _call(server.url + "api/library")
         assert status == 200
     finally:
         server.stop()

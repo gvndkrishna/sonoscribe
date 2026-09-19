@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from sonoscribe.commands import apply_commands
-from sonoscribe.lexicon import correct_product_name
+from sonoscribe.lexicon import correct_product_name, correct_scout_prefix, correct_scribe_prefix
 
 _ARTIFACTS = [
     r"\[BLANK_AUDIO\]",
@@ -121,4 +121,6 @@ def prepare_command_text(raw: str) -> str:
     text = strip_auto_punctuation(correct_product_name(raw))
     text = apply_commands(text, command_mode=True)
     text = strip_fillers(text)
+    text = correct_scout_prefix(text)
+    text = correct_scribe_prefix(text)
     return " ".join(text.split())

@@ -21,6 +21,8 @@ def empty_payload() -> dict[str, Any]:
         "commands": [],
         "routines": [],
         "variables": [],
+        "vocanotes": [],
+        "vocanote_gone": [],
         "stats": {},
     }
 
@@ -34,20 +36,34 @@ def parse_plain(raw: Any) -> dict[str, Any]:
         data["commands"] = library["commands"]
         data["routines"] = library["routines"]
         data["variables"] = library.get("variables") or []
+        data["vocanotes"] = library.get("vocanotes") or []
+        data["vocanote_gone"] = library.get("vocanote_gone") or []
         return data
     data["username"] = str(raw.get("username") or "").strip()[:40]
     stamp = raw.get("username_updated_at")
     data["username_updated_at"] = str(stamp) if stamp else None
     data["devices"] = _clean_devices(raw.get("devices"))
     try:
-        library = validate_library({"commands": raw.get("commands") or [], "routines": raw.get("routines") or [], "variables": raw.get("variables") or []})
+        library = validate_library(
+            {
+                "commands": raw.get("commands") or [],
+                "routines": raw.get("routines") or [],
+                "variables": raw.get("variables") or [],
+                "vocanotes": raw.get("vocanotes") or [],
+                "vocanote_gone": raw.get("vocanote_gone") or [],
+            }
+        )
         data["commands"] = library["commands"]
         data["routines"] = library["routines"]
         data["variables"] = library.get("variables") or []
+        data["vocanotes"] = library.get("vocanotes") or []
+        data["vocanote_gone"] = library.get("vocanote_gone") or []
     except Exception:
         data["commands"] = []
         data["routines"] = []
         data["variables"] = []
+        data["vocanotes"] = []
+        data["vocanote_gone"] = []
     stats_raw = raw.get("stats")
     if isinstance(stats_raw, dict):
         cleaned: dict[str, Any] = {}
@@ -68,6 +84,26 @@ def _without_secrets(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [item for item in items if not item.get("secret")]
 
 
+def _merge_gone(local: Any, remote: Any) -> list[dict[str, str]]:
+    by_id: dict[str, dict[str, str]] = {}
+    for item in list(remote or []) + list(local or []):
+        if not isinstance(item, dict):
+            continue
+        ident = str(item.get("id") or "").strip()
+        if not ident:
+            continue
+        stamp = str(item.get("deleted_at") or "")
+        previous = by_id.get(ident)
+        if previous is None or _is_newer(stamp, previous.get("deleted_at")):
+            by_id[ident] = {"id": ident, "deleted_at": stamp}
+    return list(by_id.values())[:200]
+
+
+def _without_gone(items: list[dict[str, Any]], gone: list[dict[str, str]] | None) -> list[dict[str, Any]]:
+    gone_ids = {item["id"] for item in gone or []}
+    return [item for item in items if item.get("id") not in gone_ids]
+
+
 def outgoing_library(items: list[dict[str, Any]], this_id: str) -> list[dict[str, Any]]:
     return [item for item in items if not _is_local_only(item, this_id)]
 
@@ -84,6 +120,7 @@ def merge_payloads(
     remote["commands"] = _without_secrets(remote.get("commands") or [])
     remote["routines"] = _without_secrets(remote.get("routines") or [])
     remote["variables"] = _without_secrets(remote.get("variables") or [])
+    remote["vocanotes"] = _without_secrets(remote.get("vocanotes") or [])
     merged = empty_payload()
     if what.get("profile", True):
         merged["username"], merged["username_updated_at"] = _newer_username(local, remote)
@@ -105,10 +142,17 @@ def merge_payloads(
             this_id,
         )
         merged["variables"] = _merge_items(local.get("variables") or [], remote.get("variables") or [], this_id)
+        merged["vocanote_gone"] = _merge_gone(local.get("vocanote_gone"), remote.get("vocanote_gone"))
+        merged["vocanotes"] = _without_gone(
+            _merge_items(local.get("vocanotes") or [], remote.get("vocanotes") or [], this_id),
+            merged["vocanote_gone"],
+        )
     else:
         merged["commands"] = list(remote["commands"])
         merged["routines"] = list(remote["routines"])
         merged["variables"] = list(remote.get("variables") or [])
+        merged["vocanote_gone"] = list(remote.get("vocanote_gone") or [])
+        merged["vocanotes"] = _without_gone(list(remote.get("vocanotes") or []), merged["vocanote_gone"])
     if what.get("stats"):
         merged["stats"] = _merge_stats(local, remote, this_id)
     else:
@@ -127,6 +171,7 @@ def apply_payload(
     remote["commands"] = _without_secrets(remote.get("commands") or [])
     remote["routines"] = _without_secrets(remote.get("routines") or [])
     remote["variables"] = _without_secrets(remote.get("variables") or [])
+    remote["vocanotes"] = _without_secrets(remote.get("vocanotes") or [])
     result = {
         "username": None,
         "username_updated_at": None,
@@ -142,10 +187,14 @@ def apply_payload(
         local_commands = [item for item in local_library.get("commands") or [] if _is_local_only(item, this_id)]
         local_routines = [item for item in local_library.get("routines") or [] if _is_local_only(item, this_id)]
         local_variables = [item for item in local_library.get("variables") or [] if _is_local_only(item, this_id)]
+        local_notes = [item for item in local_library.get("vocanotes") or [] if _is_local_only(item, this_id)]
+        gone = _merge_gone(local_library.get("vocanote_gone"), remote.get("vocanote_gone"))
         result["library"] = {
             "commands": _force_items(local_commands, list(remote["commands"])),
             "routines": _force_items(local_routines, list(remote["routines"])),
             "variables": _force_items(local_variables, list(remote.get("variables") or [])),
+            "vocanotes": _without_gone(_force_items(local_notes, list(remote.get("vocanotes") or [])), gone),
+            "vocanote_gone": gone,
         }
     if what.get("stats"):
         result["stats"] = dict(remote["stats"])

@@ -3,15 +3,19 @@ from unittest.mock import patch
 from huggingface_hub.errors import LocalEntryNotFoundError
 
 from sonoscribe.transcriber import (
+    COMMAND_LEAD_PAD,
+    COMMAND_TAIL_PAD,
     MODELS,
     TranscribeError,
     Transcriber,
     clean_model,
     friendly_load_error,
     local_model_error,
+    prepare_audio,
     resolve_model_path,
     worker_command,
 )
+from sonoscribe.worker import parse_job, transcribe_options
 
 
 def test_worker_command_uses_module() -> None:
@@ -111,4 +115,23 @@ def test_local_model_error_requires_config_and_weights(tmp_path) -> None:
     assert local_model_error(str(folder))
     (folder / "weights.npz").write_bytes(b"x")
     assert local_model_error(str(folder)) is None
+
+
+def test_parse_job_reads_mode() -> None:
+    assert parse_job("/tmp/a.npy") == ("/tmp/a.npy", "dictate")
+    assert parse_job('{"path": "/tmp/b.npy", "mode": "command"}') == ("/tmp/b.npy", "command")
+    assert "initial_prompt" not in transcribe_options("command")
+    assert "initial_prompt" not in transcribe_options("dictate")
+
+
+def test_prepare_audio_pads_command_only() -> None:
+    import numpy as np
+
+    clip = np.ones(800, dtype=np.float32)
+    dictate = prepare_audio(clip, "dictate")
+    command = prepare_audio(clip, "command")
+    assert dictate.size == clip.size
+    assert command.size == clip.size + COMMAND_LEAD_PAD + COMMAND_TAIL_PAD
+    assert float(command[COMMAND_LEAD_PAD - 1]) == 0.0
+    assert float(command[COMMAND_LEAD_PAD]) == 1.0
 

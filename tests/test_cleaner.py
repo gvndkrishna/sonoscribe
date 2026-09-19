@@ -70,3 +70,17 @@ def test_command_text_keeps_spoken_dots_and_dashes() -> None:
 
 def test_command_text_ignores_spoken_comma_and_period() -> None:
     assert prepare_command_text("hello comma world period") == "hello comma world period"
+
+
+def test_command_text_fixes_scout_prefix() -> None:
+    assert prepare_command_text("scout what is the weather") == "scout what is the weather"
+    assert prepare_command_text("task what is the weather") == "scout what is the weather"
+    assert prepare_command_text("uh task what is the weather") == "scout what is the weather"
+    assert prepare_command_text("ask what is the weather") == "ask what is the weather"
+    assert prepare_command_text("shout weather") == "shout weather"
+    assert prepare_command_text("scott weather") == "scott weather"
+
+
+def test_command_text_fixes_scribe_prefix() -> None:
+    assert prepare_command_text("scribes pay bills at 8") == "scribe pay bills at 8"
+    assert prepare_command_text("uh scribe milk") == "scribe milk"

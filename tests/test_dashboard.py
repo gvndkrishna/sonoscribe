@@ -20,10 +20,12 @@ def test_static_assets_exist() -> None:
     assert (root / "styles.css").is_file()
     assert (root / "app.js").is_file()
     js = (root / "app.js").read_text(encoding="utf-8")
-    assert "2 * 60 * 1000" in js
-    assert "STATS_MS = 5000" in js
-    assert "startAutoRefresh" in js
+    assert "PRESENCE_MS" in js
+    assert "startPresence" in js
+    assert "refreshView" in js
+    assert "/api/presence" in js
     assert "refreshStats" in js
+    assert 'currentView() === "overview"' in js
     assert "sync-now" in js
     assert "sync-layout" in js
     assert "sync-toggle" in js
@@ -63,6 +65,17 @@ def test_static_assets_exist() -> None:
     assert "model-custom" in js
     assert "/api/model/test" in js
     assert "model-test" in js
+    assert "openPlayground" in js
+    assert "consumePlaygroundScroll" in js
+    assert "playgroundSettledAtTop" in js
+    assert "command mode off" in js
+    assert "_skipLock" in js
+    assert "const PAGE_SIZE = 30" in js
+    assert "fillPager" in js
+    assert "data-pager" in js
+    assert "activityItems = stats.activity || []" in js
+    assert "findQuery" in js
+    assert "findElseHtml" in js
     assert "custom-model-name" in js
     assert 'item.cached ? "cached"' not in js
     assert "item.hint" in js
@@ -82,6 +95,8 @@ def test_static_assets_exist() -> None:
     assert 'id="refresh-stats"' in html
     assert 'id="usage-grid"' in html
     assert 'id="stat-devices-wrap"' in html
+    assert 'id="stat-scouts"' in html
+    assert "stat-scouts" in js
     assert 'id="instrument-scope"' in html
     assert 'settings-mark' in html
     assert 'aria-label="Refresh stats"' in html
@@ -93,6 +108,37 @@ def test_static_assets_exist() -> None:
     assert 'id="custom-model-path"' in html
     assert 'id="custom-model-name"' in html
     assert 'id="model-test"' in html
+    assert 'id="playground"' in html
+    assert 'id="playground-text"' in html
+    assert 'id="playground-kicker">playground' in html
+    assert 'id="playground-cue"' in html
+    assert 'id="activity-pager"' in html
+    assert 'id="command-pager"' in html
+    assert 'id="routine-pager"' in html
+    assert 'id="voice-pager"' in html
+    assert 'id="scout-pager"' in html
+    assert 'id="scribe-pager"' in html
+    assert 'id="view-scribe"' in html
+    assert 'id="scribe-new"' in html
+    assert 'class="scribe-field"' in html
+    assert 'id="vocanote"' in html
+    assert 'id="vocanote-repeat"' in html
+    assert "dismissVocanote" in js
+    assert "repeatLabel" in js
+    assert 'data-view="scribe"' in html
+    assert "06 / vocanotes" in html
+    assert "/api/scribe" in js
+    assert "refreshScribe" in js
+    assert "bindScribe" in js
+    assert "scribeDictateOpen" in js
+    assert "data-scribe-delete" in js
+    assert "bumpScribe" in js
+    assert "scribeBusy" in js
+    assert "scribeGone" in js
+    assert "rememberScribeGone" in js
+    assert "ss-scribe-gone" in js
+    assert "delete payload.vocanotes" in js
+    assert "scroll to open playground mode" in html
     assert 'id="model-builtin"' in html
     assert 'id="model-custom"' in html
     assert 'id="account-device-serial"' in html
@@ -102,6 +148,9 @@ def test_static_assets_exist() -> None:
     assert "02 / library" in html
     assert "03 / sequences" in html
     css = (root / "styles.css").read_text(encoding="utf-8")
+    assert "#scribe-new" in css
+    assert ".scribe-field" in css
+    assert "grid-template-columns: 56px minmax(0, 1fr) auto" in css
     assert "#theme-picks" in css
     assert "[data-theme=\"dark\"] .instrument" in css
     assert "--meter-bg" in css
@@ -118,6 +167,12 @@ def test_static_assets_exist() -> None:
     assert "model-stack" in css
     assert "model-add-form" in css
     assert "model-test-meta" in css
+    assert ".pager" in css
+    assert "height: 25vh" in css
+    assert "#playground" in css
+    assert "html.is-playground" in css
+    assert "--playground-shift" in css
+    assert "margin-top: var(--playground-shift)" in css
     assert "chart-resize" in css
     assert "chart-add-menu" in css
     assert "--canvas: #e4e4ea" in css
@@ -145,7 +200,7 @@ def test_static_assets_exist() -> None:
     assert "grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr)" in css
     assert 'data-view="overview"' in html
     assert html.count('class="overview-footer glass glass-box"') == 1
-    assert "Designed and Built by Govind Krishna" in html
+    assert "Designed by Govind Krishna" in html
     assert html.index("overview-footer") < html.index('id="view-commands"')
     assert ".overview-footer:hover .overview-footer-credit" in css
     assert "nav button svg" in css
@@ -211,6 +266,8 @@ def test_static_assets_exist() -> None:
     assert 'id="reveal-commands"' in html
     assert 'id="reveal-routines"' in html
     assert 'id="lock-timeout"' in html
+    assert "never" in js
+    assert "no limit" in js
     assert 'id="lock-save"' in html
     assert 'id="lock-now"' in html
     assert 'id="lock-change"' in html
@@ -222,11 +279,64 @@ def test_static_assets_exist() -> None:
     assert 'id="lock-cancel-change"' in html
     assert "/api/lock/unlock" in js
     assert "/api/lock/confirm" in js
+    assert "/api/lock/disable" in js
+    assert 'promptLock("off")' in js
     assert "Touch ID" not in html
     assert "unlock-touch" not in js
     assert 'data-view="voice"' in html
     assert ">vocab</span>" in html
     assert "<h1>vocab</h1>" in html
+    assert 'data-view="scout"' in html
+    assert 'cx="12" cy="12" r="8"' in html
+    assert 'id="view-scout"' in html
+    assert "05 / briefs" in html
+    assert 'id="pane-scout"' in html
+    assert 'data-settings-pane="scout"' in html
+    assert 'id="scout-settings"' in html
+    assert 'id="scout-tools"' in html
+    assert 'id="scout-context"' in html
+    assert 'id="add-mcp"' in html
+    assert 'id="scout-key"' in html
+    assert 'id="scout-key-wrap"' in html
+    assert 'id="change-scout-key"' in html
+    assert 'id="cancel-scout-key"' in html
+    assert 'id="brief"' in html
+    assert 'id="select-commands"' in html
+    assert 'id="delete-commands"' in html
+    assert 'id="select-routines"' in html
+    assert 'id="delete-routines"' in html
+    assert 'id="select-voice"' in html
+    assert 'id="delete-voice"' in html
+    assert 'id="select-briefs"' in html
+    assert 'id="delete-briefs"' in html
+    assert "brief-preview" in js
+    assert "scoutModelFor" in js
+    assert "change api key" in html
+    assert "/api/scout" in js
+    assert "scout-tokens" in js
+    assert "scout-cost" in js
+    assert "scoutReady" in js
+    assert "parseMcpEnv" in js
+    assert 'id="mcp-env"' in html
+    assert "location.hash" in js
+    assert "openBrief" in js
+    assert "briefSku" in js
+    assert "sc–" in js
+    assert "open_id" in js
+    assert "open_page" in js
+    assert "capture_screen" in js
+    assert "setBriefContinue" in js
+    assert "/api/scout/continue" in js
+    assert "data.open_id" in js
+    assert "say scout, then a follow-up" in html
+    assert 'id="brief-hint"' in html
+    assert 'id="brief-thread"' in html
+    assert 'id="brief-cancel"' in html
+    assert 'id="brief-insert"' in html
+    assert "/api/scout/insert" in js
+    assert "briefCanInsert" in js
+    assert "insertOpenBrief" in js
+    assert "brief-turn-insert" not in js
     assert 'id="view-voice"' in html
     assert 'id="add-voice"' in html
     assert 'id="reveal-voice"' in html
@@ -244,6 +354,116 @@ def test_static_assets_exist() -> None:
     assert 'data-settings-pane="sync"' in html
     assert 'aria-disabled="true"' in html
     assert "If this copy already has a name" in js
+    assert "applyTabState" in js
+    assert "claimThisTab" in js
+    assert "busy ? 700 : 1100" in js
+    assert 'id="tab-gate"' in html
+    assert 'id="tab-claim"' in html
+
+
+def test_latest_tab_owns_focus_and_scout_page(tmp_path) -> None:
+    stats = StatsStore(tmp_path / "stats.json")
+    server = DashboardServer(stats, port=0)
+    assert server.scout_page_open() is False
+    assert server.note_client(tab="a", view="scout", claim=True) == "ok"
+    assert server.scout_page_open() is True
+    assert server.note_client(tab="b", view="overview", claim=True) == "ok"
+    assert server.scout_page_open() is False
+    assert server.note_client(tab="a", view="scout") == "stale"
+    server.request_focus("scout")
+    server.request_open_brief("tsk-1")
+    assert server.consume_focus("a") == ""
+    assert server.peek_open_brief("a") == ""
+    assert server.consume_focus("b") == "scout"
+    assert server.consume_open_brief("b") == "tsk-1"
+    assert server.presence_payload("tab=b&view=overview")["tab"] == "ok"
+    stale = server.presence_payload("tab=a&view=scout")
+    assert stale["tab"] == "stale"
+    assert stale["focus"] == ""
+    assert stale["open_id"] == ""
+    assert server.note_client(tab="b", view="scribe", claim=True) == "ok"
+    server.request_open_note("voc-1")
+    assert server.peek_open_note("a") == ""
+    assert server.consume_open_note("b") == "voc-1"
+
+
+def test_scribe_api_create_edit_delete(tmp_path) -> None:
+    stats = StatsStore(tmp_path / "stats.json")
+    server = DashboardServer(stats, port=0)
+    server.start()
+    try:
+        request = Request(
+            server.url + "api/scribe",
+            data=json.dumps({"text": "pay bills at 8 o'clock"}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(request) as response:
+            created = json.loads(response.read())
+        note = created["item"]
+        assert note["is_todo"] is True
+        assert note["is_reminder"] is True
+        assert note["title"] == "pay bills at 8 o'clock"
+        patch = Request(
+            server.url + "api/scribe",
+            data=json.dumps({"id": note["id"], "title": "pay the bills", "is_todo": True, "is_reminder": False}).encode(),
+            method="PATCH",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(patch) as response:
+            saved = json.loads(response.read())
+        assert saved["item"]["title"] == "pay the bills"
+        assert saved["item"]["is_reminder"] is False
+        delete = Request(
+            server.url + "api/scribe",
+            data=json.dumps({"ids": [note["id"]]}).encode(),
+            method="DELETE",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(delete) as response:
+            gone = json.loads(response.read())
+        assert gone["items"] == []
+        stale = Request(
+            server.url + "api/library",
+            data=json.dumps(
+                {
+                    "commands": empty_library()["commands"],
+                    "routines": [],
+                    "variables": [],
+                    "vocanotes": [note],
+                }
+            ).encode(),
+            method="PUT",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(stale) as response:
+            library = json.loads(response.read())
+        assert all(item.get("id") != note["id"] for item in library.get("vocanotes") or [])
+        with urlopen(server.url + "api/scribe") as response:
+            listed = json.loads(response.read())
+        assert listed["items"] == []
+    finally:
+        server.stop()
+
+
+def test_test_listening_captures_dictation(tmp_path) -> None:
+    stats = StatsStore(tmp_path / "stats.json")
+    server = DashboardServer(stats, port=0)
+    assert server.test_listening() is False
+    assert server.append_test("hello") is False
+    server.set_test({"listen": True})
+    assert server.test_listening() is True
+    assert server.append_test("hello") is True
+    assert server.test_state()["text"] == "hello"
+    server.set_test({"listen": False})
+    assert server.test_listening() is False
+    assert server.append_test("again") is False
+    assert server.test_state()["text"] == "hello"
+    server.set_test({"listen": True, "sink": "scribe", "clear": True})
+    assert server.append_test("milk") is True
+    state = server.test_state()
+    assert state["sink"] == "scribe"
+    assert state["text"] == "milk"
 
 
 def test_library_roundtrip(tmp_path, monkeypatch) -> None:
@@ -302,8 +522,11 @@ def test_library_roundtrip(tmp_path, monkeypatch) -> None:
         with urlopen(server.url) as response:
             html = response.read().decode()
         assert "Sonoscribe" in html
-        assert "command-search" in html
+        assert "open-find" in html
+        assert "find-query" in html
         assert "activity-search" in html
+        assert "command-search" not in html
+        assert "voice-search" not in html
         assert 'id="chart-grid"' in html
         assert 'id="add-chart"' in html
         with urlopen(server.url + "api/stats") as response:
@@ -580,6 +803,7 @@ def test_custom_model_api_adds_local_folder(tmp_path, monkeypatch) -> None:
         with urlopen(request) as response:
             listening = json.loads(response.read())
         assert listening["listen"] is True
+        assert server.test_listening() is True
         assert server.append_test("hello there") is True
         with urlopen(server.url + "api/model/test") as response:
             heard = json.loads(response.read())
@@ -632,6 +856,160 @@ def test_sync_sign_in_route(tmp_path, monkeypatch) -> None:
         assert data["ok"] is True
         assert data["command"] == "gcloud auth login"
         assert seen == [["gcloud", "auth", "login"]]
+    finally:
+        server.stop()
+        clear_settings_cache()
+
+
+def test_scout_routes(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SONOSCRIBE_SETTINGS", str(tmp_path / "settings.json"))
+    monkeypatch.setenv("SONOSCRIBE_SCOUT", str(tmp_path / "scout.json"))
+    from sonoscribe.settings import clear_settings_cache
+
+    clear_settings_cache()
+    stats = StatsStore(tmp_path / "stats.json")
+    server = DashboardServer(stats, port=0)
+    server.start()
+    try:
+        with urlopen(server.url + "api/scout") as response:
+            data = json.loads(response.read())
+        assert data["runs"] == []
+        assert "focus" in data
+        server.request_focus("scout")
+        with urlopen(server.url + "api/presence") as response:
+            presence = json.loads(response.read())
+        assert presence["focus"] == "scout"
+        assert server.client_open() is True
+        with urlopen(server.url + "api/presence") as response:
+            idle = json.loads(response.read())
+        assert idle["focus"] == ""
+        server.request_focus("scout")
+        with urlopen(server.url + "api/scout") as response:
+            focused = json.loads(response.read())
+        assert focused["focus"] == "scout"
+        assert server.client_open() is True
+        assert focused.get("continue_id") == ""
+        assert focused.get("open_id") == ""
+        from sonoscribe.scout.store import upsert_run
+
+        upsert_run(
+            {
+                "id": "tsk-dash",
+                "prompt": "weather in chicago",
+                "status": "done",
+                "want_insert": True,
+                "answer": {"kind": "qa", "title": "chicago weather", "blocks": [{"type": "lead", "text": "52"}]},
+            },
+            active=False,
+        )
+        with urlopen(server.url + "api/scout") as response:
+            listed = json.loads(response.read())
+        assert listed["runs"][0]["sku"] == "sc–01"
+        assert listed["runs"][0]["n"] == 1
+        from sonoscribe.scout import set_brief_insert
+
+        pasted: list[dict] = []
+        set_brief_insert(pasted.append)
+        request = Request(
+            server.url + "api/scout/insert",
+            data=json.dumps({"id": "tsk-dash"}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(request) as response:
+            inserted = json.loads(response.read())
+        assert inserted["run"]["insert_text"] == "52"
+        assert pasted[0]["id"] == "tsk-dash"
+        server.request_open_brief("tsk-dash")
+        with urlopen(server.url + "api/presence") as response:
+            peek = json.loads(response.read())
+        assert peek["open_id"] == "tsk-dash"
+        assert peek["focus"] == "scout"
+        with urlopen(server.url + "api/presence") as response:
+            still = json.loads(response.read())
+        assert still["open_id"] == "tsk-dash"
+        with urlopen(server.url + "api/scout") as response:
+            opened = json.loads(response.read())
+        assert opened["open_id"] == "tsk-dash"
+        assert opened["focus"] == ""
+        with urlopen(server.url + "api/presence") as response:
+            after = json.loads(response.read())
+        assert after["open_id"] == ""
+        request = Request(
+            server.url + "api/scout/title",
+            data=json.dumps({"id": "tsk-dash", "title": "lake wind"}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(request) as response:
+            renamed = json.loads(response.read())
+        assert renamed["run"]["title"] == "lake wind"
+        request = Request(
+            server.url + "api/scout/continue",
+            data=json.dumps({"id": "tsk-dash"}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(request) as response:
+            armed = json.loads(response.read())
+        assert armed["continue_id"] == "tsk-dash"
+        request = Request(
+            server.url + "api/scout/continue",
+            data=json.dumps({"id": ""}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(request) as response:
+            idle = json.loads(response.read())
+        assert idle["continue_id"] == ""
+        request = Request(
+            server.url + "api/scout/delete",
+            data=json.dumps({"ids": ["tsk-dash"]}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(request) as response:
+            deleted = json.loads(response.read())
+        assert deleted["runs"] == []
+        with urlopen(server.url + "api/scout/settings") as response:
+            scout = json.loads(response.read())
+        assert scout["provider"] == "openai"
+        assert scout["has_key"] is False
+        assert scout["lock_ok"] is False
+        request = Request(
+            server.url + "api/scout/settings",
+            data=json.dumps({"provider": "anthropic", "model": "claude-sonnet-4-0"}).encode(),
+            method="PUT",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(HTTPError) as blocked:
+            urlopen(request)
+        assert blocked.value.code == 400
+        from sonoscribe.settings import update_settings
+
+        update_settings({"lock": {"enabled": True, "method": "pin"}})
+        server.lock.require_unlocked = lambda token: None
+        server.lock.require_confirm = lambda token: {}
+        request = Request(
+            server.url + "api/scout/settings",
+            data=json.dumps({"provider": "anthropic", "model": "claude-sonnet-4-0"}).encode(),
+            method="PUT",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(request) as response:
+            saved = json.loads(response.read())
+        assert saved["provider"] == "anthropic"
+        assert saved["model"] == "claude-sonnet-4-0"
+        assert saved["models"]["anthropic"] == "claude-sonnet-4-0"
+        request = Request(
+            server.url + "api/scout/key",
+            data=json.dumps({"provider": "anthropic", "key": "sk-ant-test"}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(request) as response:
+            keyed = json.loads(response.read())
+        assert keyed["has_key"] is True
     finally:
         server.stop()
         clear_settings_cache()

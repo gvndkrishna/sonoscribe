@@ -21,6 +21,7 @@ from sonoscribe.actions import (
     SCRATCH,
     norm_token,
 )
+from sonoscribe.lexicon import scout_prefix_rest, scribe_prefix_rest
 from sonoscribe.apps import app_scope_ids, clean_apps, item_on_apps, scopes_overlap
 from sonoscribe.device import clean_device_ids, iso_now, item_on_device, this_device_id
 from sonoscribe.keys import clean_keys
@@ -55,6 +56,26 @@ SYSTEM_ACTIONS = (
     "screenshot_selection",
 )
 RESERVED_PREFIX = "routine"
+RESERVED_PREFIXES = ("routine", "scout", "task", "scribe")
+_SCOUT_SKU_PREFIX = frozenset({"scout", "sc", "tk", "tsk", "brief"})
+_SCOUT_MINUS = frozenset({"minus", "negative"})
+_SCOUT_NUMBERS = {
+    "zero": 0,
+    "oh": 0,
+    "nought": 0,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+}
 _ENV_LIBRARY = "SONOSCRIBE_LIBRARY"
 
 DEFAULT_COMMANDS: list[dict[str, Any]] = [
@@ -108,7 +129,7 @@ DEFAULT_COMMANDS: list[dict[str, Any]] = [
 
 @dataclass(frozen=True)
 class Match:
-    kind: str  # command | routine | routine_incomplete | unknown
+    kind: str  # command | routine | routine_incomplete | scout | scout_incomplete | scribe | scribe_incomplete | unknown
     command: dict[str, Any] | None = None
     routine: dict[str, Any] | None = None
     label: str = ""
@@ -149,13 +170,31 @@ def new_id(prefix: str = "id") -> str:
     return f"{prefix}-{uuid.uuid4().hex[:10]}"
 
 
+def _reserved_first(text: str) -> str:
+    parts = str(text or "").split()
+    if not parts:
+        return ""
+    first = parts[0]
+    return first if first in RESERVED_PREFIXES else ""
+
+
 def normalize_phrase(text: str) -> str:
-    parts = [norm_token(p) for p in re.split(r"\s+", text.strip())]
-    return " ".join(p for p in parts if p)
+    parts: list[str] = []
+    for piece in re.split(r"\s+", text.strip()):
+        raw = piece.strip().lower()
+        if re.fullmatch(r"-\d+", raw):
+            parts.append(raw)
+            continue
+        token = norm_token(piece)
+        if token:
+            parts.append(token)
+    return " ".join(parts)
 
 
 def empty_library() -> dict[str, Any]:
-    return copy.deepcopy({"commands": DEFAULT_COMMANDS, "routines": [], "variables": []})
+    return copy.deepcopy(
+        {"commands": DEFAULT_COMMANDS, "routines": [], "variables": [], "vocanotes": [], "vocanote_gone": []}
+    )
 
 
 @dataclass
@@ -264,6 +303,58 @@ def command_by_id(library: dict[str, Any], command_id: str) -> dict[str, Any] | 
         return _index_for(library).commands_by_id.get(command_id)
 
 
+def split_scout_ref(tokens: list[str]) -> tuple[int | None, list[str]]:
+    words = [str(item or "") for item in tokens if str(item or "")]
+    if not words:
+        return None, []
+    i = 0
+    sku = False
+    sign = 1
+    if words[0] in _SCOUT_SKU_PREFIX:
+        sku = True
+        i = 1
+        if i >= len(words):
+            return None, words
+    if i < len(words) and words[i] in _SCOUT_MINUS:
+        sign = -1
+        i += 1
+        if i >= len(words):
+            return None, words
+    if i >= len(words):
+        return None, words
+    number = _scout_number_token(words[i])
+    if number is None:
+        return None, words
+    used_digit = bool(re.fullmatch(r"-?\d+", words[i])) or bool(
+        re.fullmatch(r"(?:scout|sc|tk|tsk)[-–]?\d{1,2}", words[i])
+    )
+    i += 1
+    rest = words[i:]
+    if number < 0:
+        return number, rest
+    if sign < 0:
+        return (-number if number else 0), rest
+    if sku:
+        return (number if number else 0), rest
+    if number == 0:
+        return 0, rest
+    if used_digit or not rest:
+        return number, rest
+    return None, words
+
+
+def _scout_number_token(token: str) -> int | None:
+    text = str(token or "")
+    if re.fullmatch(r"-?\d+", text):
+        return int(text)
+    if text in _SCOUT_NUMBERS:
+        return _SCOUT_NUMBERS[text]
+    tagged = re.fullmatch(r"(?:scout|sc|tk|tsk)[-–]?(\d{1,2})", text)
+    if tagged:
+        return int(tagged.group(1))
+    return None
+
+
 def match_utterance(
     text: str,
     library: dict[str, Any],
@@ -279,28 +370,72 @@ def match_utterance(
     variables = variable_map(library)
     with _lock:
         index = _index_for(library)
+    command = _match_exact_command(phrase, index, device_id, frontmost)
+    if command is not None:
+        return command
+    scout_rest = scout_prefix_rest(tokens)
+    if scout_rest is not None:
+        if not scout_rest:
+            return Match("scout_incomplete", label="scout")
+        rest_phrase = " ".join(scout_rest)
+        leaked = _match_command(scout_rest, rest_phrase, index, device_id, frontmost, variables)
+        if leaked is not None:
+            return leaked
+        leaked_routine = _match_routine(scout_rest, rest_phrase, index, device_id, variables)
+        if leaked_routine is not None:
+            return leaked_routine
+        ref, rest = split_scout_ref(scout_rest)
+        prompt = " ".join(rest)
+        bindings = {"prompt": prompt}
+        if ref is not None:
+            bindings["ref"] = str(ref)
+        return Match("scout", label=prompt or f"scout {ref}", bindings=bindings)
+    scribe_rest = scribe_prefix_rest(tokens)
+    if scribe_rest is not None:
+        if not scribe_rest:
+            return Match("scribe_incomplete", label="scribe")
+        text = " ".join(scribe_rest)
+        return Match("scribe", label=text, bindings={"text": text})
     if tokens[0] == RESERVED_PREFIX:
         if len(tokens) == 1:
             return Match("routine_incomplete", label="routine")
         rest = tokens[1:]
         name = " ".join(rest)
-        routine = index.routines_by_alias.get(name)
-        bindings: dict[str, str] = {}
-        if routine is None:
-            routine, bindings = _pick_slotted(index.slotted_routines, rest, variables, device_id)
-        if routine is not None and (not device_id or item_on_device(routine, device_id)):
-            label = str(routine.get("name") or name)
-            return Match("routine", routine=routine, label=label, bindings=bindings)
+        routine = _match_routine(rest, name, index, device_id, variables)
+        if routine is not None:
+            return routine
         return Match("unknown", label=phrase)
+    slotted = _match_slotted_command(tokens, index, device_id, frontmost, variables)
+    if slotted is not None:
+        return slotted
+    return Match("unknown", label=phrase)
+
+
+def _match_exact_command(
+    phrase: str,
+    index: _PhraseIndex,
+    device_id: str | None,
+    frontmost: dict[str, str] | None,
+) -> Match | None:
     candidates = [
         item
         for item in (index.commands_by_phrase.get(phrase) or [])
         if not device_id or item_on_device(item, device_id)
     ]
     command = _pick_command(candidates, frontmost)
-    if command is not None:
-        label = str(command.get("name") or phrase)
-        return Match("command", command=command, label=label)
+    if command is None:
+        return None
+    label = str(command.get("name") or phrase)
+    return Match("command", command=command, label=label)
+
+
+def _match_slotted_command(
+    tokens: list[str],
+    index: _PhraseIndex,
+    device_id: str | None,
+    frontmost: dict[str, str] | None,
+    variables: dict[str, str],
+) -> Match | None:
     command, bindings = _pick_slotted(
         index.slotted_commands,
         tokens,
@@ -308,10 +443,40 @@ def match_utterance(
         device_id,
         frontmost=frontmost,
     )
-    if command is not None:
-        label = str(command.get("name") or phrase)
-        return Match("command", command=command, label=label, bindings=bindings)
-    return Match("unknown", label=phrase)
+    if command is None:
+        return None
+    label = str(command.get("name") or " ".join(tokens))
+    return Match("command", command=command, label=label, bindings=bindings)
+
+
+def _match_command(
+    tokens: list[str],
+    phrase: str,
+    index: _PhraseIndex,
+    device_id: str | None,
+    frontmost: dict[str, str] | None,
+    variables: dict[str, str],
+) -> Match | None:
+    return _match_exact_command(phrase, index, device_id, frontmost) or _match_slotted_command(
+        tokens, index, device_id, frontmost, variables
+    )
+
+
+def _match_routine(
+    tokens: list[str],
+    name: str,
+    index: _PhraseIndex,
+    device_id: str | None,
+    variables: dict[str, str],
+) -> Match | None:
+    routine = index.routines_by_alias.get(name)
+    bindings: dict[str, str] = {}
+    if routine is None:
+        routine, bindings = _pick_slotted(index.slotted_routines, tokens, variables, device_id)
+    if routine is not None and (not device_id or item_on_device(routine, device_id)):
+        label = str(routine.get("name") or name)
+        return Match("routine", routine=routine, label=label, bindings=bindings)
+    return None
 
 
 def _pick_command(
@@ -340,6 +505,21 @@ def _pick_command(
     return None
 
 
+_PROMPTISH_SLOT = re.compile(
+    r"\b(trailer|weather|latest|tickets?|what's|what is|who is|how to)\b",
+    re.IGNORECASE,
+)
+
+
+def slot_looks_like_prompt(command: dict[str, Any] | None, bindings: dict[str, str] | None) -> bool:
+    if not isinstance(command, dict) or str(command.get("type") or "") != "app":
+        return False
+    text = " ".join(str(value) for value in (bindings or {}).values() if str(value).strip())
+    if len(text.split()) >= 4:
+        return True
+    return bool(_PROMPTISH_SLOT.search(text))
+
+
 def _pick_slotted(
     items: list[tuple[str, dict[str, Any]]],
     tokens: list[str],
@@ -352,7 +532,7 @@ def _pick_slotted(
         if device_id and not item_on_device(item, device_id):
             continue
         bound = match_pattern(pattern, tokens, variables)
-        if bound is None:
+        if bound is None or slot_looks_like_prompt(item, bound):
             continue
         scored.append((pattern_score(pattern), item, bound))
     if not scored:
@@ -384,12 +564,15 @@ def validate_library(data: Any) -> dict[str, Any]:
     raw_commands = data.get("commands")
     raw_routines = data.get("routines")
     raw_variables = data.get("variables")
+    raw_vocanotes = data.get("vocanotes")
     if raw_commands is None:
         raw_commands = []
     if raw_routines is None:
         raw_routines = []
     if raw_variables is None:
         raw_variables = []
+    if raw_vocanotes is None:
+        raw_vocanotes = []
     if not isinstance(raw_commands, list):
         errors.append("commands must be a list")
         raw_commands = []
@@ -399,6 +582,9 @@ def validate_library(data: Any) -> dict[str, Any]:
     if not isinstance(raw_variables, list):
         errors.append("variables must be a list")
         raw_variables = []
+    if not isinstance(raw_vocanotes, list):
+        errors.append("vocanotes must be a list")
+        raw_vocanotes = []
 
     variables: list[dict[str, Any]] = []
     seen_var_ids: set[str] = set()
@@ -473,9 +659,37 @@ def validate_library(data: Any) -> dict[str, Any]:
                 routine_names[key] = item["name"]
         routines.append(item)
 
+    from sonoscribe.scribe.model import validate_vocanote
+
+    vocanotes: list[dict[str, Any]] = []
+    seen_note_ids: set[str] = set()
+    for index, raw in enumerate(raw_vocanotes):
+        prefix = f"Vocanote {index + 1}"
+        if not isinstance(raw, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        item, item_errors = validate_vocanote(raw, prefix)
+        errors.extend(item_errors)
+        if item is None:
+            continue
+        if item["id"] in seen_note_ids:
+            errors.append(f"{prefix}: duplicate id {item['id']!r}")
+        seen_note_ids.add(item["id"])
+        vocanotes.append(item)
+
+    gone = _clean_vocanote_gone(data.get("vocanote_gone"))
+    gone_ids = {item["id"] for item in gone}
+    vocanotes = [item for item in vocanotes if item["id"] not in gone_ids]
+
     if errors:
         raise LibraryError(errors)
-    return {"commands": commands, "routines": routines, "variables": variables}
+    return {
+        "commands": commands,
+        "routines": routines,
+        "variables": variables,
+        "vocanotes": vocanotes,
+        "vocanote_gone": gone,
+    }
 
 
 def is_secret(item: dict[str, Any] | None) -> bool:
@@ -491,6 +705,7 @@ def public_library(library: dict[str, Any]) -> dict[str, Any]:
         "commands": [item for item in library.get("commands") or [] if not is_secret(item)],
         "routines": [item for item in library.get("routines") or [] if not is_secret(item)],
         "variables": [item for item in library.get("variables") or [] if not is_secret(item)],
+        "vocanotes": [item for item in library.get("vocanotes") or [] if not is_secret(item)],
     }
 
 
@@ -512,6 +727,9 @@ def apply_library_update(
     confirmed: bool,
     lock_on: bool,
 ) -> dict[str, Any]:
+    raw = incoming if isinstance(incoming, dict) else {}
+    keep_notes = "vocanotes" not in raw
+    keep_gone = "vocanote_gone" not in raw
     incoming = validate_library(incoming)
     current = validate_library(current) if current else empty_library()
 
@@ -536,13 +754,44 @@ def apply_library_update(
         secret_ids = {item["id"] for item in secrets}
         return [item for item in in_public if item["id"] not in secret_ids] + secrets
 
+    gone = list(current.get("vocanote_gone") or []) if keep_gone else list(incoming.get("vocanote_gone") or [])
+    notes = list(current.get("vocanotes") or []) if keep_notes else merge("vocanotes")
+    gone_ids = {item["id"] for item in gone}
     return validate_library(
         {
             "commands": merge("commands"),
             "routines": merge("routines"),
             "variables": merge("variables"),
+            "vocanotes": [item for item in notes if item["id"] not in gone_ids],
+            "vocanote_gone": gone,
         }
     )
+
+
+def _clean_vocanote_gone(raw: Any) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        ident = str(item.get("id") or "").strip()
+        if not ident or ident in seen:
+            continue
+        seen.add(ident)
+        out.append({"id": ident, "deleted_at": str(item.get("deleted_at") or "") or iso_now()})
+        if len(out) >= 200:
+            break
+    return out
+
+
+def union_vocanote_gone(*groups: Any) -> list[dict[str, str]]:
+    raw: list[Any] = []
+    for group in groups:
+        if isinstance(group, list):
+            raw.extend(group)
+    return _clean_vocanote_gone(raw)
 
 
 def _validate_variable(raw: dict[str, Any], prefix: str) -> tuple[dict[str, Any] | None, list[str]]:
@@ -681,8 +930,9 @@ def _validate_routine(
     if not name:
         errors.append(f"{prefix}: name is required")
     else:
-        if name.split()[0] == RESERVED_PREFIX:
-            errors.append(f"{prefix}: name cannot start with {RESERVED_PREFIX!r}")
+        reserved = _reserved_first(name)
+        if reserved:
+            errors.append(f"{prefix}: name cannot start with {reserved!r}")
         errors.extend(f"{prefix}: {err}" for err in validate_pattern(name, names))
     rtn_id = str(raw.get("id") or "").strip() or new_id("rtn")
     phrases, phrase_errors = _clean_phrases(raw.get("phrases") or [], prefix, allow_empty=True, known_names=names)
@@ -742,8 +992,9 @@ def _clean_phrases(
         errors.extend(f"{prefix}: {err}" for err in phrase_errors)
         if not phrase:
             continue
-        if phrase.split()[0] == RESERVED_PREFIX:
-            errors.append(f"{prefix}: phrase {phrase!r} cannot start with {RESERVED_PREFIX!r}")
+        reserved = _reserved_first(phrase)
+        if reserved:
+            errors.append(f"{prefix}: phrase {phrase!r} cannot start with {reserved!r}")
             continue
         for err in validate_pattern(phrase, names):
             errors.append(f"{prefix}: phrase {phrase!r} {err}")
@@ -863,6 +1114,7 @@ def _drop_removed_builtins(library: dict[str, Any]) -> tuple[dict[str, Any], boo
         "commands": kept,
         "routines": rewritten,
         "variables": list(library.get("variables") or []),
+        "vocanotes": list(library.get("vocanotes") or []),
     }
     return validate_library(next_library), True
 
@@ -874,7 +1126,7 @@ def remap_device_id(old_id: str, new_id: str) -> bool:
         return False
     library = load_library()
     changed = False
-    for key in ("commands", "routines"):
+    for key in ("commands", "routines", "vocanotes"):
         for item in library.get(key) or []:
             assigned = item.get("devices")
             if not isinstance(assigned, list) or previous not in assigned:
@@ -932,7 +1184,13 @@ def _load_library_locked(target: Path) -> dict[str, Any]:
         websites = commands_from_github_map(github)
         if websites:
             seeded = [item for item in library["commands"] if item.get("type") != "website"]
-            library = {"commands": seeded + websites, "routines": [], "variables": []}
+            library = {
+                "commands": seeded + websites,
+                "routines": [],
+                "variables": [],
+                "vocanotes": [],
+                "vocanote_gone": [],
+            }
     return _write_library_locked(library, target)
 
 

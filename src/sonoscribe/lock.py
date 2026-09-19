@@ -17,7 +17,7 @@ from sonoscribe.settings import load_settings, update_settings
 from sonoscribe.sync.keychain import delete_lock_secret, get_lock_secret, set_lock_secret
 
 COOKIE_NAME = "ss_lock"
-LOCK_TIMEOUTS = (300, 600, 900, 1800, 2700, 3600)
+LOCK_TIMEOUTS = (0, 300, 600, 900, 1800, 2700, 3600)
 DEFAULT_TIMEOUT = 900
 CONFIRM_SECONDS = 120
 PIN_ROUNDS = 210_000
@@ -207,8 +207,12 @@ class LockController:
         sess = self._new_session()
         return public_lock(sess, self.now()), sess.token
 
-    def disable(self, token: str | None) -> dict[str, Any]:
+    def disable(self, token: str | None, pin: str = "") -> dict[str, Any]:
+        if not lock_enabled():
+            return public_lock(None, self.now())
         self.require_unlocked(token)
+        if not verify_pin(pin, get_lock_secret() or ""):
+            raise LockError("Wrong PIN.", 401, "pin")
         delete_lock_secret()
         _write_lock(enabled=False, timeout_sec=lock_settings()["timeout_sec"])
         with self._guard:
@@ -276,7 +280,8 @@ class LockController:
         sess = self._session
         if not cfg["enabled"] or sess is None or not token or sess.token != token:
             return None
-        if self.now() - sess.last_active > int(cfg["timeout_sec"]):
+        timeout = int(cfg["timeout_sec"])
+        if timeout > 0 and self.now() - sess.last_active > timeout:
             self._session = None
             return None
         return sess

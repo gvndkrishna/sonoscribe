@@ -35,6 +35,19 @@ MODEL_HINTS = {
     "base": "fast",
 }
 _WEIGHT_NAMES = ("weights.npz", "weights.safetensors", "model.safetensors")
+SAMPLE_RATE = 16_000
+COMMAND_LEAD_PAD = int(SAMPLE_RATE * 0.3)
+COMMAND_TAIL_PAD = int(SAMPLE_RATE * 0.15)
+
+
+def prepare_audio(samples: np.ndarray, mode: str = "dictate") -> np.ndarray:
+    """Pad command clips so Whisper does not eat the first word (often `scout`)."""
+    audio = np.ascontiguousarray(samples, dtype=np.float32).reshape(-1)
+    if str(mode or "") != "command" or audio.size == 0:
+        return audio
+    lead = np.zeros(COMMAND_LEAD_PAD, dtype=np.float32)
+    tail = np.zeros(COMMAND_TAIL_PAD, dtype=np.float32)
+    return np.concatenate([lead, audio, tail])
 
 
 def clean_model(value: Any, fallback: str = DEFAULT_MODEL, custom_ids: Any = ()) -> str:
@@ -291,19 +304,20 @@ class Transcriber:
             if "error" in data:
                 raise TranscribeError(friendly_load_error(str(data["error"])))
 
-    def transcribe(self, samples: np.ndarray) -> Transcript:
+    def transcribe(self, samples: np.ndarray, *, mode: str = "dictate") -> Transcript:
         if samples.size == 0:
             raise TranscribeError("No audio was captured.")
 
         fd, path = tempfile.mkstemp(prefix="sonoscribe-", suffix=".npy")
         os.close(fd)
         try:
-            np.save(path, np.ascontiguousarray(samples, dtype=np.float32))
+            np.save(path, prepare_audio(samples, mode))
+            payload = json.dumps({"path": path, "mode": str(mode or "dictate")})
             with self._lock:
                 if self._proc is None or self._proc.poll() is not None:
                     raise TranscribeError("The Whisper worker is not running.")
                 assert self._proc.stdin is not None and self._proc.stdout is not None
-                self._proc.stdin.write(path + "\n")
+                self._proc.stdin.write(payload + "\n")
                 self._proc.stdin.flush()
                 line = self._proc.stdout.readline()
             if not line:
