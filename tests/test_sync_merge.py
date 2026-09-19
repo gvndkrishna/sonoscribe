@@ -72,6 +72,97 @@ def test_secret_items_are_not_uploaded_or_applied() -> None:
     assert "var-leaked" not in var_ids
 
 
+def test_merge_vocanotes_with_library() -> None:
+    local_note = {
+        "id": "voc-local",
+        "title": "milk",
+        "is_note": True,
+        "is_todo": True,
+        "is_reminder": False,
+        "due_at": "",
+        "notified_at": "",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+        "devices": ["dev-a"],
+    }
+    remote_note = {
+        "id": "voc-cloud",
+        "title": "pay bills at 8",
+        "is_note": True,
+        "is_todo": True,
+        "is_reminder": True,
+        "due_at": "2026-09-20T20:00:00-04:00",
+        "notified_at": "",
+        "updated_at": "2026-03-01T00:00:00+00:00",
+    }
+    merged = merge_payloads(
+        local={"commands": [], "routines": [], "variables": [], "vocanotes": [local_note], "username": "", "devices": [], "stats": {}},
+        remote={"commands": [], "routines": [], "variables": [], "vocanotes": [remote_note], "username": "", "devices": [], "stats": {}},
+        this_id="dev-a",
+        what={"profile": True, "library": True, "stats": False},
+    )
+    ids = {item["id"] for item in merged["vocanotes"]}
+    assert ids == {"voc-local", "voc-cloud"}
+    applied = apply_payload(
+        local_library={"commands": [], "routines": [], "variables": [], "vocanotes": [local_note]},
+        remote={"commands": [], "routines": [], "variables": [], "vocanotes": [remote_note]},
+        this_id="dev-a",
+        what={"library": True, "profile": False, "stats": False},
+    )
+    assert {item["id"] for item in applied["library"]["vocanotes"]} == {"voc-local", "voc-cloud"}
+
+
+def test_merge_keeps_deleted_vocanotes_gone() -> None:
+    gone_note = {
+        "id": "voc-gone",
+        "title": "old milk",
+        "is_note": True,
+        "is_todo": True,
+        "is_reminder": False,
+        "due_at": "",
+        "notified_at": "",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    }
+    merged = merge_payloads(
+        local={
+            "commands": [],
+            "routines": [],
+            "variables": [],
+            "vocanotes": [],
+            "vocanote_gone": [{"id": "voc-gone", "deleted_at": "2026-09-19T12:00:00+00:00"}],
+            "username": "",
+            "devices": [],
+            "stats": {},
+        },
+        remote={
+            "commands": [],
+            "routines": [],
+            "variables": [],
+            "vocanotes": [gone_note],
+            "username": "",
+            "devices": [],
+            "stats": {},
+        },
+        this_id="dev-a",
+        what={"profile": True, "library": True, "stats": False},
+    )
+    assert merged["vocanotes"] == []
+    assert {item["id"] for item in merged["vocanote_gone"]} == {"voc-gone"}
+    applied = apply_payload(
+        local_library={
+            "commands": [],
+            "routines": [],
+            "variables": [],
+            "vocanotes": [],
+            "vocanote_gone": [{"id": "voc-gone", "deleted_at": "2026-09-19T12:00:00+00:00"}],
+        },
+        remote={"commands": [], "routines": [], "variables": [], "vocanotes": [gone_note]},
+        this_id="dev-a",
+        what={"library": True, "profile": False, "stats": False},
+    )
+    assert applied["library"]["vocanotes"] == []
+    assert {item["id"] for item in applied["library"]["vocanote_gone"]} == {"voc-gone"}
+
+
 def test_parse_v1_library_payload() -> None:
     parsed = parse_plain({"commands": [_cmd("kbd-enter", [])], "routines": []})
     assert parsed["v"] == 2

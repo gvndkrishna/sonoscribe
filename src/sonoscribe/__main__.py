@@ -48,8 +48,9 @@ def main(argv: list[str] | None = None) -> None:
 
         raise SystemExit(run_worker(args.model, args.model_path))
 
-    from sonoscribe.runtime import attach_log_if_needed
+    from sonoscribe.runtime import attach_log_if_needed, configure_tls
 
+    configure_tls()
     log_path = attach_log_if_needed()
     if log_path is not None:
         print(f"Logging to {log_path}", flush=True)

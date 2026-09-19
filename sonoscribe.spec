@@ -56,6 +56,9 @@ hiddenimports = [
     "tiktoken_ext.openai_public",
     "truststore",
     "cryptography",
+    "boto3",
+    "botocore",
+    "s3transfer",
     "Security",
     "huggingface_hub",
     "AppKit",
@@ -113,6 +116,12 @@ except Exception:
 try:
     datas += collect_data_files("tiktoken")
     datas += collect_data_files("tiktoken_ext")
+except Exception:
+    pass
+
+try:
+    datas += collect_data_files("boto3")
+    datas += collect_data_files("botocore")
 except Exception:
     pass
 

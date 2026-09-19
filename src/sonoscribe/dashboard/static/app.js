@@ -28,6 +28,7 @@ function kindColors() {
     dictate: token("--signal-a", "#8a7a4a"),
     command: token("--signal-b", "#7a5344"),
     routine: token("--signal-c", "#3f5c56"),
+    scout: token("--signal-d", "#4a5c6b"),
   };
 }
 
@@ -67,20 +68,23 @@ const SYSTEM_ACTIONS = [
   ["screenshot_selection", "Screenshot selection"],
 ];
 
-let library = { commands: [], routines: [], variables: [] };
+const VIEWS = ["overview", "commands", "routines", "voice", "scout", "scribe"];
+let library = { commands: [], routines: [], variables: [], vocanotes: [] };
 let editorMode = null;
 let editorIndex = -1;
 let recordedKeys = [];
 let recording = false;
 let nativeKeyCapture = false;
 let recordPoll = 0;
-let commandQuery = "";
+let findQuery = "";
 let commandFilter = "all";
-let voiceQuery = "";
 let activityItems = [];
 let activityQuery = "";
-const STATS_MS = 5000;
+const PAGE_SIZE = 30;
+const listPages = { activity: 1, commands: 1, routines: 1, voice: 1, scout: 1, scribe: 1 };
+const PRESENCE_MS = 2500;
 const LOCK_TIMEOUT_LABEL = {
+  0: "never",
   300: "5 minutes",
   600: "10 minutes",
   900: "15 minutes",
@@ -98,12 +102,14 @@ const SYNC_INTERVAL_LABEL = {
 let lockIdleTimer = 0;
 let lastLockActivity = 0;
 let appBooted = false;
-let autoRefreshStarted = false;
+let presenceStarted = false;
+let tabToken = "";
+let tabClaim = true;
+let tabStale = false;
 let lockPrompt = null;
 let lockDrafting = false;
 let lockChangingPin = false;
 const OVERVIEW_ANIM_MS = 5000;
-const CLOUD_MS = 2 * 60 * 1000;
 const ACCENTS = ["blue", "purple", "amber", "teal", "gray"];
 const PROVIDER_LABEL = { aws: "Amazon S3", gcs: "Google Cloud", azure: "Azure Blob" };
 let settings = {
@@ -112,7 +118,7 @@ let settings = {
   timezone: "local",
   reduce_motion: false,
   private_mode: false,
-  lock: { enabled: false, method: "", timeout_sec: 900, unlocked: true, secrets: true, confirmed: false, timeouts: [300, 600, 900, 1800, 2700, 3600] },
+  lock: { enabled: false, method: "", timeout_sec: 900, unlocked: true, secrets: true, confirmed: false, timeouts: [0, 300, 600, 900, 1800, 2700, 3600] },
   keychain_scope: "local",
   username: "",
   device: { id: "", name: "" },
@@ -121,7 +127,24 @@ let settings = {
   accents: ACCENTS,
   model: "large-v3-turbo",
   models: [],
+  scout: { provider: "openai", model: "gpt-4o-mini", models: {}, has_key: false, providers: ["openai", "anthropic", "grok", "kimi", "bedrock", "local"] },
 };
+let scoutState = { current: null, runs: [] };
+let briefPicks = new Set();
+let commandPicks = new Set();
+let routinePicks = new Set();
+let voicePicks = new Set();
+let openBriefId = "";
+let scoutPoll = 0;
+let scribeItems = [];
+let openNoteId = "";
+let scribePoll = 0;
+let scribeBusy = 0;
+const scribeGone = new Set();
+const SCRIBE_GONE_KEY = "ss-scribe-gone";
+let lastScribeTest = "";
+let scoutKeyEditing = false;
+let mcpTransport = "stdio";
 let modelState = {
   model: "large-v3-turbo",
   active: "large-v3-turbo",
@@ -132,6 +155,17 @@ let modelState = {
 let modelPoll = 0;
 let modelAddOpen = false;
 let lastModelTest = "";
+let playgroundOpen = false;
+let playgroundPull = 0;
+let playgroundDragging = false;
+let playgroundSettle = 0;
+let playgroundTouchY = null;
+let lastNonTopScroll = 0;
+let lastPlaygroundWheel = performance.now();
+const PLAYGROUND_RESIST = 0.22;
+const PLAYGROUND_REST_MS = 340;
+const PLAYGROUND_TOP_MS = 560;
+const PLAYGROUND_LOCK = 0.82;
 let pendingPrivateKey = "";
 let revealedKey = "";
 let savedKeyConfirm = false;
@@ -251,12 +285,14 @@ function toast(message, kind) {
 }
 
 async function api(path, options = {}) {
-  const { _skipConfirm, ...fetchOpts } = options;
+  const { _skipConfirm, _skipLock, ...fetchOpts } = options;
   const res = await fetch(path, fetchOpts);
   let data = await res.json().catch(() => ({}));
   if (res.status === 401 && data.code === "locked") {
-    applyLock({ ...(settings.lock || {}), enabled: true, unlocked: false, secrets: false, confirmed: false });
-    ensureUnlock();
+    if (!_skipLock) {
+      applyLock({ ...(settings.lock || {}), enabled: true, unlocked: false, secrets: false, confirmed: false });
+      ensureUnlock();
+    }
     throw Object.assign(new Error(data.error || "Locked."), { code: "locked" });
   }
   if (res.status === 401 && data.code === "confirm" && !_skipConfirm) {
@@ -316,10 +352,12 @@ function mergeSettings(data) {
     fingerprint: data.fingerprint || "",
     icloud_keychain: data.icloud_keychain,
     charts: Array.isArray(data.charts) ? data.charts : settings.charts,
+    scout: data.scout || settings.scout,
   };
   applyAppearance(settings);
   applySettingsAttention(settings.sync);
   updateSyncNav();
+  updateScoutNav();
 }
 
 function applySettingsAttention(sync) {
@@ -331,7 +369,73 @@ function applySettingsAttention(sync) {
 }
 
 function lockBlocks() {
-  return Boolean(settings.lock?.enabled && settings.lock?.unlocked === false);
+  return tabStale || Boolean(settings.lock?.enabled && settings.lock?.unlocked === false);
+}
+
+function tabId() {
+  if (tabToken) return tabToken;
+  try {
+    tabToken = sessionStorage.getItem("ss-tab") || "";
+    if (!tabToken) {
+      tabToken = crypto.randomUUID ? crypto.randomUUID() : `tab-${Date.now()}`;
+      sessionStorage.setItem("ss-tab", tabToken);
+    }
+  } catch {
+    tabToken = `tab-${Date.now()}`;
+  }
+  return tabToken;
+}
+
+function clientQuery(claim) {
+  const params = new URLSearchParams();
+  params.set("tab", tabId());
+  params.set("view", currentView());
+  if (claim || tabClaim) params.set("claim", "1");
+  return params.toString();
+}
+
+function applyTabState(data) {
+  if (!data || data.tab == null) return;
+  const stale = data.tab === "stale";
+  tabClaim = false;
+  if (stale === tabStale) return;
+  tabStale = stale;
+  if (stale) showTabLock();
+  else hideTabLock();
+}
+
+function showTabLock() {
+  setLockScroll(true);
+  if (settings.lock?.enabled) {
+    ensureUnlock();
+    return;
+  }
+  const gate = $("#tab-gate");
+  if (!gate) return;
+  gate.classList.add("lock-full");
+  if (!gate.open) gate.showModal();
+}
+
+function hideTabLock() {
+  const gate = $("#tab-gate");
+  if (gate?.open) gate.close();
+  gate?.classList.remove("lock-full");
+  if (!lockBlocks()) {
+    hideLockGate();
+    setLockScroll(false);
+  }
+}
+
+function claimThisTab() {
+  tabClaim = true;
+  tabStale = false;
+  hideTabLock();
+  api(`/api/presence?${clientQuery(true)}`)
+    .then((data) => {
+      applyTabState(data);
+      if (!tabStale) refresh().catch((err) => toast(err.message));
+    })
+    .catch(() => {});
 }
 
 function applyLock(data, { keepGate = false } = {}) {
@@ -340,7 +444,7 @@ function applyLock(data, { keepGate = false } = {}) {
     ...(settings.lock || {}),
     enabled: Boolean(data.enabled),
     method: data.method || "",
-    timeout_sec: Number(data.timeout_sec) || 900,
+    timeout_sec: finiteNumber(data.timeout_sec, 900),
     timeouts: data.timeouts || settings.lock.timeouts,
     unlocked: data.unlocked !== false,
     secrets: Boolean(data.secrets),
@@ -355,7 +459,16 @@ function applyLock(data, { keepGate = false } = {}) {
   }
   renderSecretButtons();
   renderLockFields();
-  if (lockBlocks()) clearTimeout(lockIdleTimer);
+  renderScoutSettings();
+  if (!settings.lock.enabled) {
+    const pane = document.querySelector('[data-settings-pane="scout"]');
+    if (pane?.classList.contains("active")) showSettings("account");
+    if (currentView() === "scout") renderScout();
+  }
+  if (lockBlocks()) {
+    clearTimeout(lockIdleTimer);
+    closePlayground();
+  }
   else if (!keepGate) {
     hideLockGate();
     armLockIdle();
@@ -375,7 +488,7 @@ function renderSecretButtons() {
 
 function lockTimeoutOptions() {
   const timeouts = settings.lock?.timeouts || Object.keys(LOCK_TIMEOUT_LABEL).map(Number);
-  return timeouts.map((sec) => [String(sec), LOCK_TIMEOUT_LABEL[sec] || `${sec / 60} minutes`]);
+  return timeouts.map((sec) => [String(sec), LOCK_TIMEOUT_LABEL[sec] || (sec ? `${sec / 60} minutes` : "never")]);
 }
 
 function lockSaveVisible() {
@@ -390,11 +503,21 @@ function syncReady() {
   return Boolean(settings.lock?.enabled && String(settings.username || "").trim());
 }
 
+function scoutReady() {
+  return Boolean(settings.lock?.enabled);
+}
+
 function updateSyncNav() {
   const btn = document.querySelector('[data-settings-pane="sync"]');
   if (!btn) return;
   const ready = syncReady();
   btn.setAttribute("aria-disabled", ready ? "false" : "true");
+}
+
+function updateScoutNav() {
+  const btn = document.querySelector('[data-settings-pane="scout"]');
+  if (!btn) return;
+  btn.setAttribute("aria-disabled", scoutReady() ? "false" : "true");
 }
 
 function showSettings(pane) {
@@ -403,13 +526,17 @@ function showSettings(pane) {
     toast("Lock and username required.");
     target = "account";
   }
+  if (target === "scout" && !scoutReady()) {
+    toast("Set a lock first.");
+    target = "account";
+  }
   document.querySelectorAll("[data-settings-pane]").forEach((el) => {
     el.classList.toggle("active", el.dataset.settingsPane === target);
   });
   document.querySelectorAll(".settings-pane").forEach((el) => {
     el.classList.toggle("hidden", el.id !== `pane-${target}`);
   });
-  syncModelTest(target === "model");
+  syncDictationListen();
 }
 
 function clearLockPinFields() {
@@ -438,7 +565,7 @@ function renderLockFields() {
   $("#lock-change")?.classList.toggle("hidden", !lockNowVisible());
   const timeout = $("#lock-timeout");
   if (timeout && timeout !== document.activeElement) {
-    const current = String(lock.timeout_sec || 900);
+    const current = String(finiteNumber(lock.timeout_sec, 900));
     if (!timeout.options.length) {
       timeout.innerHTML = lockTimeoutOptions()
         .map(([value, label]) => `<option value="${value}">${label}</option>`)
@@ -447,6 +574,7 @@ function renderLockFields() {
     timeout.value = current;
   }
   updateSyncNav();
+  updateScoutNav();
 }
 
 function setLockScroll(on) {
@@ -471,6 +599,7 @@ function overlayBlocksPageScroll(event) {
     event.preventDefault();
     return;
   }
+  if (consumePlaygroundScroll(event)) return;
   if (!document.documentElement.classList.contains("is-frozen")) return;
   if (event.target.closest("dialog[open] .settings-pane")) return;
   event.preventDefault();
@@ -480,12 +609,18 @@ function showLockGate(mode) {
   const gate = $("#lock-gate");
   if (!gate) return;
   const unlock = mode === "unlock";
+  const copy =
+    mode === "off"
+      ? { kicker: "lock", title: "turn off", submit: "turn off" }
+      : unlock
+        ? { kicker: "locked", title: "sonoscribe", submit: "unlock" }
+        : { kicker: "confirm", title: "confirm", submit: "confirm" };
   gate.classList.toggle("lock-full", unlock);
   setLockScroll(unlock);
-  $("#lock-kicker").textContent = unlock ? "locked" : "confirm";
-  $("#lock-title").textContent = unlock ? "sonoscribe" : "confirm";
+  $("#lock-kicker").textContent = copy.kicker;
+  $("#lock-title").textContent = copy.title;
   $("#lock-hint").textContent = "Enter your 4-digit PIN";
-  $("#lock-pin-submit").textContent = unlock ? "unlock" : "confirm";
+  $("#lock-pin-submit").textContent = copy.submit;
   $("#lock-cancel")?.classList.toggle("hidden", unlock);
   $("#lock-mark")?.classList.remove("is-unlock");
   const pin = $("#lock-gate-pin");
@@ -507,9 +642,11 @@ function armLockIdle() {
   clearTimeout(lockIdleTimer);
   const lock = settings.lock;
   if (!lock?.enabled || lock.unlocked === false) return;
+  const sec = finiteNumber(lock.timeout_sec, 900);
+  if (sec <= 0) return;
   lockIdleTimer = setTimeout(() => {
     lockNow().catch(() => {});
-  }, (Number(lock.timeout_sec) || 900) * 1000);
+  }, sec * 1000);
 }
 
 function noteLockActivity() {
@@ -557,7 +694,7 @@ function promptLock(mode) {
       $("#lock-pin-submit")?.removeEventListener("click", onPin);
       $("#lock-cancel")?.removeEventListener("click", onCancelClick);
       $("#lock-gate-pin")?.removeEventListener("keydown", onKey);
-      if (mode === "confirm" && !lockBlocks()) hideLockGate();
+      if (mode !== "unlock" && !lockBlocks()) hideLockGate();
       resolve(ok);
     };
     const onCancel = (event) => {
@@ -568,7 +705,8 @@ function promptLock(mode) {
     const submitPin = async () => {
       const pin = $("#lock-gate-pin")?.value || "";
       try {
-        const path = mode === "unlock" ? "/api/lock/unlock" : "/api/lock/confirm";
+        const path =
+          mode === "unlock" ? "/api/lock/unlock" : mode === "off" ? "/api/lock/disable" : "/api/lock/confirm";
         const data = await api(path, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -577,6 +715,7 @@ function promptLock(mode) {
         });
         applyLock(data, { keepGate: mode === "unlock" });
         if (mode === "unlock") await afterUnlock();
+        if (mode === "off") toast("Lock is off");
         finish(true);
       } catch (err) {
         toast(err.message, "error");
@@ -632,11 +771,17 @@ function playUnlockMark() {
 
 async function afterUnlock() {
   await playUnlockMark();
-  hideLockGate();
-  armLockIdle();
+  tabClaim = true;
+  tabStale = false;
+  const gate = $("#lock-gate");
+  if (gate?.open) gate.close();
+  gate?.classList.remove("lock-full");
+  hideTabLock();
+  setLockScroll(false);
+  if (!lockBlocks()) armLockIdle();
   if (appBooted) {
     try {
-      await refresh({ pull: true });
+      await refresh();
       renderAccount();
     } catch (err) {
       toast(err.message);
@@ -678,6 +823,10 @@ function bindLockUi() {
   $("#reveal-commands")?.addEventListener("click", () => toggleSecrets());
   $("#reveal-routines")?.addEventListener("click", () => toggleSecrets());
   $("#reveal-voice")?.addEventListener("click", () => toggleSecrets());
+  $("#tab-gate")?.addEventListener("cancel", (event) => {
+    if (tabStale) event.preventDefault();
+  });
+  $("#tab-claim")?.addEventListener("click", () => claimThisTab());
 }
 
 function commandMeta(cmd) {
@@ -697,21 +846,151 @@ function commandMeta(cmd) {
   return "";
 }
 
+function findNeedle() {
+  return findQuery.trim().toLowerCase();
+}
+
+function hayIncludes(parts, q) {
+  return parts
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+    .includes(q);
+}
+
+function commandTextMatches(cmd, q) {
+  return hayIncludes(
+    [
+      cmd.name,
+      cmd.type,
+      TYPE_LABEL[cmd.type],
+      commandMeta(cmd),
+      ...(cmd.phrases || []),
+      ...(cmd.apps || []).flatMap((app) => [app.name, app.bundle_id]),
+    ],
+    q
+  );
+}
+
 function commandMatches(cmd) {
   if (commandFilter !== "all" && cmd.type !== commandFilter) return false;
-  const q = commandQuery.trim().toLowerCase();
+  const q = findNeedle();
   if (!q) return true;
-  const hay = [
-    cmd.name,
-    cmd.type,
-    TYPE_LABEL[cmd.type],
-    commandMeta(cmd),
-    ...(cmd.phrases || []),
-    ...(cmd.apps || []).flatMap((app) => [app.name, app.bundle_id]),
-  ]
-    .join(" ")
-    .toLowerCase();
-  return hay.includes(q);
+  return commandTextMatches(cmd, q);
+}
+
+function routineMatches(rtn) {
+  const q = findNeedle();
+  if (!q) return true;
+  return hayIncludes(
+    [rtn.name, ...(rtn.phrases || []), String((rtn.steps || []).length)],
+    q
+  );
+}
+
+function voiceMatches(item) {
+  const q = findNeedle();
+  if (!q) return true;
+  return hayIncludes([item.name, item.value], q);
+}
+
+function briefMatches(run) {
+  const q = findNeedle();
+  if (!q) return true;
+  return hayIncludes([briefTitle(run), run.prompt, run.follow_up, briefPreview(run).text], q);
+}
+
+function vocanoteMatches(note) {
+  const q = findNeedle();
+  if (!q) return true;
+  return hayIncludes([note.title, note.body, note.sku, repeatLabel(note), dueLabel(note)], q);
+}
+
+function findElseHits(skipView) {
+  const q = findNeedle();
+  if (!q) return [];
+  const skip = String(skipView || "");
+  const hits = [];
+  if (skip !== "commands") {
+    (library.commands || []).forEach((cmd) => {
+      if (commandTextMatches(cmd, q)) {
+        hits.push({ view: "commands", page: "commands", title: cmd.name || "command", sku: TYPE_SKU[cmd.type] || "" });
+      }
+    });
+  }
+  if (skip !== "routines") {
+    (library.routines || []).forEach((rtn, index) => {
+      if (routineMatches(rtn)) {
+        hits.push({ view: "routines", page: "routines", title: rtn.name || "routine", sku: `rt–${String(index + 1).padStart(2, "0")}` });
+      }
+    });
+  }
+  if (skip !== "voice") {
+    (library.variables || []).forEach((item, index) => {
+      if (voiceMatches(item)) {
+        hits.push({ view: "voice", page: "vocab", title: item.name ? `{${item.name}}` : "vocab", sku: `vo–${String(index + 1).padStart(2, "0")}` });
+      }
+    });
+  }
+  if (skip !== "scout") {
+    (scoutState.runs || []).forEach((run, index) => {
+      if (briefMatches(run)) {
+        hits.push({ view: "scout", page: "scout", title: briefTitle(run), sku: briefSku(run, index) });
+      }
+    });
+  }
+  if (skip !== "scribe") {
+    const notes = scribeItems.length ? scribeItems : library.vocanotes || [];
+    notes.forEach((note, index) => {
+      if (vocanoteMatches(note)) {
+        hits.push({
+          view: "scribe",
+          page: "scribe",
+          title: note.title || "note",
+          sku: note.sku || `vn–${String(index + 1).padStart(2, "0")}`,
+        });
+      }
+    });
+  }
+  return hits.slice(0, PAGE_SIZE);
+}
+
+function findHitHtml(hit) {
+  return `<button type="button" class="find-hit" data-find-view="${escapeHtml(hit.view)}">
+    <span class="find-page">${escapeHtml(hit.page)}</span>
+    <span class="find-title">${escapeHtml(hit.title)}</span>
+    <span class="sku">${escapeHtml(hit.sku || "")}</span>
+  </button>`;
+}
+
+function findElseHtml(skipView) {
+  const hits = findElseHits(skipView);
+  if (!hits.length) return `<p class="empty">no matches.</p>`;
+  return `<div class="find-else">${hits.map(findHitHtml).join("")}</div>`;
+}
+
+function renderFindHits() {
+  const root = $("#find-hits");
+  if (!root) return;
+  const q = findNeedle();
+  root.classList.toggle("hidden", !q);
+  if (!q) {
+    root.innerHTML = "";
+    return;
+  }
+  root.innerHTML = findElseHtml("");
+}
+
+function applyFind() {
+  ["commands", "routines", "voice", "scout", "scribe"].forEach((key) => {
+    listPages[key] = 1;
+  });
+  renderFindHits();
+  renderCommands();
+  renderRoutines();
+  renderVoice();
+  renderScout();
+  renderScribe();
 }
 
 function meterCells(stats) {
@@ -720,6 +999,7 @@ function meterCells(stats) {
     { el: $("#stat-commands"), value: Number(stats.command_runs) || 0, digits: 0 },
     { el: $("#stat-routines"), value: Number(stats.routine_runs) || 0, digits: 0 },
     { el: $("#stat-words"), value: Number(stats.dictation_words) || 0, digits: 0 },
+    { el: $("#stat-scouts"), value: Number(stats.scout_runs) || 0, digits: 0 },
   ];
   const devicesWrap = $("#stat-devices-wrap");
   if (devicesWrap && !devicesWrap.classList.contains("hidden")) {
@@ -811,7 +1091,7 @@ function renderStats(stats) {
   lastStats = stats;
   renderMeterMeta(stats);
   setMeterValues(stats, false);
-  activityItems = (stats.activity || []).slice(0, 30);
+  activityItems = stats.activity || [];
   renderActivity();
   renderChartGrid();
   renderCharts(stats);
@@ -871,18 +1151,69 @@ function activityMatches(item) {
     .includes(q);
 }
 
+function pageCount(total) {
+  return Math.max(1, Math.ceil(Math.max(0, total) / PAGE_SIZE));
+}
+
+function clampListPage(key, total) {
+  const pages = pageCount(total);
+  const page = Math.min(pages, Math.max(1, listPages[key] || 1));
+  listPages[key] = page;
+  return page;
+}
+
+function pageSlice(items, key) {
+  const page = clampListPage(key, items.length);
+  const start = (page - 1) * PAGE_SIZE;
+  return items.slice(start, start + PAGE_SIZE);
+}
+
+function pagerHtml(key, total) {
+  if (total <= PAGE_SIZE) return "";
+  const pages = pageCount(total);
+  const page = clampListPage(key, total);
+  return `<nav class="pager" data-pager="${escapeHtml(key)}" aria-label="pages">
+    <button type="button" class="text-btn" data-page-step="-1" ${page <= 1 ? "disabled" : ""} aria-label="previous page">prev</button>
+    <span class="unit">${page} / ${pages}</span>
+    <button type="button" class="text-btn" data-page-step="1" ${page >= pages ? "disabled" : ""} aria-label="next page">next</button>
+  </nav>`;
+}
+
+function fillPager(id, key, total) {
+  const el = $(id);
+  if (el) el.innerHTML = pagerHtml(key, total);
+}
+
+function bindPagers() {
+  document.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-page-step]");
+    if (!btn || btn.disabled) return;
+    const nav = btn.closest("[data-pager]");
+    if (!nav) return;
+    const key = nav.dataset.pager;
+    if (!listPages[key]) return;
+    listPages[key] = (listPages[key] || 1) + Number(btn.dataset.pageStep);
+    if (key === "activity") renderActivity();
+    else if (key === "commands") renderCommands();
+    else if (key === "routines") renderRoutines();
+    else if (key === "voice") renderVoice();
+    else if (key === "scout") renderScout();
+  });
+}
+
 function renderActivity() {
   const list = $("#activity");
   const items = activityItems.filter(activityMatches);
+  fillPager("#activity-pager", "activity", items.length);
   if (!activityItems.length) {
-    list.innerHTML = `<li class="empty">nothing yet. dictate or run a command.</li>`;
+    list.innerHTML = `<li class="empty">nothing yet. dictate, run a command, or say scout.</li>`;
     return;
   }
   if (!items.length) {
     list.innerHTML = `<li class="empty">no activity matches that search.</li>`;
     return;
   }
-  list.innerHTML = items
+  list.innerHTML = pageSlice(items, "activity")
     .map(
       (item) =>
         `<li><span>${formatTime(item.at)}</span><span class="kind kind-${escapeHtml(item.kind)}">${item.kind}</span><span class="label">${escapeHtml(item.label || "")}</span></li>`
@@ -902,6 +1233,8 @@ const CHART_CATALOG = [
   { id: "routine-split", title: "commands vs routines" },
   { id: "hourly", title: "time of day" },
   { id: "library", title: "library mix" },
+  { id: "scout-tokens", title: "scout tokens", extra: true },
+  { id: "scout-cost", title: "scout cost", extra: true },
 ];
 const GRID_COLS = 24;
 const ROW_H = 8;
@@ -916,7 +1249,7 @@ function defaultCharts() {
   const out = [];
   let x = 0;
   let y = 0;
-  CHART_CATALOG.forEach((item) => {
+  CHART_CATALOG.filter((item) => !item.extra).forEach((item) => {
     const w = item.id === "library" ? 16 : DEFAULT_W;
     if (x + w > GRID_COLS) {
       x = 0;
@@ -1129,6 +1462,7 @@ function addChart(id) {
   const w = id === "library" ? 16 : DEFAULT_W;
   const spot = placeChart(layout, w, DEFAULT_H);
   persistChartLayout([...layout, { id, ...spot, w, h: DEFAULT_H }]);
+  if (id === "library") refreshLibrary().catch((err) => toast(err.message));
 }
 
 function removeChart(id) {
@@ -1302,6 +1636,8 @@ function renderCharts(stats) {
   renderHourly($("#chart-hourly"), charts.hourly || []);
   renderLibrary($("#chart-library"));
   renderUsage(charts.usage || []);
+  renderScoutTokens($("#chart-scout-tokens"), charts.scout_tokens || []);
+  renderScoutCost($("#chart-scout-cost"), charts.scout_cost || []);
 }
 
 function usageLevel(count) {
@@ -1395,6 +1731,7 @@ function renderMix(el, byKind) {
     { label: "dictate", value: byKind.dictate || 0, color: colors.dictate },
     { label: "commands", value: byKind.command || 0, color: colors.command },
     { label: "routines", value: byKind.routine || 0, color: colors.routine },
+    { label: "scouts", value: byKind.scout || 0, color: colors.scout },
   ];
   const total = segments.reduce((sum, item) => sum + item.value, 0);
   if (!total) {
@@ -1514,9 +1851,9 @@ function renderDaily(el, days) {
   const ink = chartInk();
   const max = Math.max(
     1,
-    ...days.map((day) => (day.dictate || 0) + (day.command || 0) + (day.routine || 0))
+    ...days.map((day) => (day.dictate || 0) + (day.command || 0) + (day.routine || 0) + (day.scout || 0))
   );
-  if (!days.some((day) => (day.dictate || 0) + (day.command || 0) + (day.routine || 0))) {
+  if (!days.some((day) => (day.dictate || 0) + (day.command || 0) + (day.routine || 0) + (day.scout || 0))) {
     el.innerHTML = emptyChart("no activity in the last 14 days");
     return;
   }
@@ -1532,6 +1869,7 @@ function renderDaily(el, days) {
         ["dictate", day.dictate || 0],
         ["command", day.command || 0],
         ["routine", day.routine || 0],
+        ["scout", day.scout || 0],
       ];
       const parts = kinds
         .map(([kind, value]) => {
@@ -1550,6 +1888,7 @@ function renderDaily(el, days) {
       <span><i style="background:${colors.dictate}"></i>dictate</span>
       <span><i style="background:${colors.command}"></i>commands</span>
       <span><i style="background:${colors.routine}"></i>routines</span>
+      <span><i style="background:${colors.scout}"></i>scouts</span>
     </div>`;
   bindHovers(el);
 }
@@ -1601,6 +1940,56 @@ function renderHourly(el, hours) {
     <text x="12" y="146" fill="${ink.muted}" font-size="9">00</text>
     <text x="154" y="146" fill="${ink.muted}" font-size="9">12</text>
     <text x="298" y="146" fill="${ink.muted}" font-size="9">23</text>
+  </svg>`;
+  bindHovers(el);
+}
+
+function renderScoutTokens(el, rows) {
+  if (!el) return;
+  const items = (rows || []).filter((row) => row.count);
+  if (!items.length) {
+    el.innerHTML = emptyChart("run a scout to see tokens");
+    return;
+  }
+  const ink = chartInk();
+  const max = Math.max(...items.map((row) => row.count), 1);
+  el.innerHTML = `<svg viewBox="0 0 320 ${items.length * 28 + 8}" role="img" aria-label="Scout tokens">
+    ${items
+      .map((row, index) => {
+        const y = 8 + index * 28;
+        const w = Math.max(8, (row.count / max) * 170);
+        const label = row.label || row.id || "model";
+        return `<text x="0" y="${y + 12}" fill="${ink.body}" font-size="11">${escapeHtml(label)}</text>
+          <rect class="fill-h" style="--d:${index * 70}" x="120" y="${y + 6}" width="${w}" height="4" fill="${ink.accent}" data-tip="${escapeHtml(label)}: ${row.input || 0} in / ${row.output || 0} out"></rect>
+          <text x="${128 + w}" y="${y + 12}" fill="${ink.muted}" font-size="11">${row.count}</text>`;
+      })
+      .join("")}
+  </svg>`;
+  bindHovers(el);
+}
+
+function renderScoutCost(el, days) {
+  if (!el) return;
+  const ink = chartInk();
+  const rows = days || [];
+  const max = Math.max(...rows.map((day) => Number(day.cost) || 0), 0);
+  if (!max) {
+    el.innerHTML = emptyChart("no scout spend yet");
+    return;
+  }
+  const width = Math.max(320, 18 + rows.length * 18);
+  const bars = rows
+    .map((day, index) => {
+      const value = Number(day.cost) || 0;
+      if (!value) return "";
+      const h = Math.max(2, (value / max) * 104);
+      const x = 18 + index * 18;
+      const y = 128 - h;
+      return `<rect class="fill-v" style="--d:${index * 24}" x="${x}" y="${y}" width="10" height="${h}" fill="${ink.accent}" data-tip="${day.day}: $${value.toFixed(4)}"></rect>`;
+    })
+    .join("");
+  el.innerHTML = `<svg viewBox="0 0 ${width} 150" role="img" aria-label="Scout cost">${bars}
+    <line x1="12" y1="128" x2="${width - 12}" y2="128" stroke="${ink.hairline}" stroke-width="1" />
   </svg>`;
   bindHovers(el);
 }
@@ -1746,28 +2135,39 @@ function renderLibrary(el) {
 function renderCommands() {
   const root = $("#command-groups");
   const visible = library.commands.filter(commandMatches);
+  prunePicks(commandPicks, library.commands);
+  syncPickBar("commands", visible.map((cmd) => cmd.id), commandPicks);
+  fillPager("#command-pager", "commands", visible.length);
   if (!library.commands.length) {
     root.innerHTML = `<p class="empty">No commands.</p>`;
     return;
   }
   if (!visible.length) {
-    root.innerHTML = `<p class="empty">No matches.</p>`;
+    root.innerHTML = findNeedle() ? findElseHtml("commands") : `<p class="empty">No matches.</p>`;
     return;
   }
+  const skuById = new Map();
+  const typeRank = {};
+  visible.forEach((cmd) => {
+    typeRank[cmd.type] = (typeRank[cmd.type] || 0) + 1;
+    skuById.set(cmd.id, `${TYPE_SKU[cmd.type]}–${String(typeRank[cmd.type]).padStart(2, "0")}`);
+  });
+  const pageItems = pageSlice(visible, "commands");
   root.innerHTML = TYPES.map((type) => {
-    const items = visible.filter((cmd) => cmd.type === type);
+    const items = pageItems.filter((cmd) => cmd.type === type);
     if (!items.length) return "";
     const rows = items
-      .map((cmd, typeIndex) => {
+      .map((cmd) => {
         const index = library.commands.indexOf(cmd);
-        const sku = `${TYPE_SKU[type]}–${String(typeIndex + 1).padStart(2, "0")}`;
         const phrases = (cmd.phrases || [])
           .map((p) => `<span class="pill">${escapeHtml(p)}</span>`)
           .join("");
         const extra = deviceLabel(cmd);
         const appIcons = appIconsHtml(cmd.apps);
-        return `<div class="row${cmd.secret ? " is-secret" : ""}" data-edit-command="${index}" data-type="${type}">
-          <span class="sku">${sku}</span>
+        const picked = commandPicks.has(cmd.id);
+        return `<div class="row${cmd.secret ? " is-secret" : ""}${picked ? " is-on" : ""}" data-edit-command="${index}" data-type="${type}">
+          ${pickHtml("command", cmd.id, picked)}
+          <span class="sku">${escapeHtml(skuById.get(cmd.id) || "")}</span>
           <div>
             <div class="name">${escapeHtml(cmd.name)}${appIcons}</div>
             <div class="phrases">${phrases}${extra ? `<span class="pill">${escapeHtml(extra)}</span>` : ""}</div>
@@ -1778,9 +2178,6 @@ function renderCommands() {
       .join("");
     return `<div class="group"><h3>${TYPE_LABEL[type].toLowerCase()}</h3>${rows}</div>`;
   }).join("");
-  root.querySelectorAll("[data-edit-command]").forEach((el) => {
-    el.addEventListener("click", () => openCommandEditor(Number(el.dataset.editCommand)));
-  });
 }
 
 function isSlotTemplate(value) {
@@ -1791,23 +2188,24 @@ function renderVoice() {
   const root = $("#voice-list");
   if (!root) return;
   const items = library.variables || [];
-  const visible = items.filter((item) => {
-    const q = voiceQuery.trim().toLowerCase();
-    if (!q) return true;
-    return `${item.name || ""} ${item.value || ""}`.toLowerCase().includes(q);
-  });
+  const visible = items.filter(voiceMatches);
+  prunePicks(voicePicks, items);
+  syncPickBar("voice", visible.map((item) => item.id), voicePicks);
+  fillPager("#voice-pager", "voice", visible.length);
   if (!items.length) {
     root.innerHTML = `<p class="empty">no vocab.</p>`;
     return;
   }
   if (!visible.length) {
-    root.innerHTML = `<p class="empty">No matches.</p>`;
+    root.innerHTML = findNeedle() ? findElseHtml("voice") : `<p class="empty">No matches.</p>`;
     return;
   }
-  root.innerHTML = visible
+  root.innerHTML = pageSlice(visible, "voice")
     .map((item) => {
       const index = items.indexOf(item);
-      return `<div class="row${item.secret ? " is-secret" : ""}" data-edit-voice="${index}">
+      const picked = voicePicks.has(item.id);
+      return `<div class="row${item.secret ? " is-secret" : ""}${picked ? " is-on" : ""}" data-edit-voice="${index}">
+        ${pickHtml("voice", item.id, picked)}
         <span class="sku">vo–${String(index + 1).padStart(2, "0")}</span>
         <div>
           <div class="name">{${escapeHtml(item.name || "")}}</div>
@@ -1816,9 +2214,6 @@ function renderVoice() {
       </div>`;
     })
     .join("");
-  root.querySelectorAll("[data-edit-voice]").forEach((el) => {
-    el.addEventListener("click", () => openVoiceEditor(Number(el.dataset.editVoice)));
-  });
 }
 
 function openVoiceEditor(index) {
@@ -1838,17 +2233,27 @@ function openVoiceEditor(index) {
     </div>
   `;
   bindSecretSwitch();
+  closePlayground();
   $("#editor").showModal();
 }
 
 function renderRoutines() {
   const root = $("#routine-list");
+  const visible = (library.routines || []).filter(routineMatches);
+  prunePicks(routinePicks, library.routines);
+  syncPickBar("routines", visible.map((rtn) => rtn.id), routinePicks);
+  fillPager("#routine-pager", "routines", visible.length);
   if (!library.routines.length) {
     root.innerHTML = `<p class="empty">No routines.</p>`;
     return;
   }
-  root.innerHTML = library.routines
-    .map((rtn, index) => {
+  if (!visible.length) {
+    root.innerHTML = findNeedle() ? findElseHtml("routines") : `<p class="empty">No matches.</p>`;
+    return;
+  }
+  root.innerHTML = pageSlice(visible, "routines")
+    .map((rtn) => {
+      const index = library.routines.indexOf(rtn);
       const steps = (rtn.steps || [])
         .map((step) => {
           const cmd = library.commands.find((c) => c.id === step.command_id);
@@ -1861,7 +2266,9 @@ function renderRoutines() {
         .map((p) => `<span class="pill">routine ${escapeHtml(p)}</span>`)
         .join("");
       const extra = deviceLabel(rtn);
-      return `<div class="row${rtn.secret ? " is-secret" : ""}" data-edit-routine="${index}">
+      const picked = routinePicks.has(rtn.id);
+      return `<div class="row${rtn.secret ? " is-secret" : ""}${picked ? " is-on" : ""}" data-edit-routine="${index}">
+        ${pickHtml("routine", rtn.id, picked)}
         <span class="sku">rt–${String(index + 1).padStart(2, "0")}</span>
         <div>
           <div class="name">${escapeHtml(rtn.name)}</div>
@@ -1872,9 +2279,6 @@ function renderRoutines() {
       </div>`;
     })
     .join("");
-  root.querySelectorAll("[data-edit-routine]").forEach((el) => {
-    el.addEventListener("click", () => openRoutineEditor(Number(el.dataset.editRoutine)));
-  });
 }
 
 function escapeHtml(value) {
@@ -2509,6 +2913,7 @@ function openCommandEditor(index) {
   renderFields();
   bindWorksInPicker();
   bindSecretSwitch();
+  closePlayground();
   $("#editor").showModal();
 }
 
@@ -2564,6 +2969,7 @@ function openRoutineEditor(index) {
     bindSteps();
   };
   bindSecretSwitch();
+  closePlayground();
   $("#editor").showModal();
 }
 
@@ -2717,27 +3123,109 @@ async function deleteCurrent() {
   $("#editor").close();
 }
 
-async function persist(next) {
+async function persist(next, message) {
+  const payload = { ...next };
+  delete payload.vocanotes;
+  delete payload.vocanote_gone;
   library = await api("/api/library", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(next),
+    body: JSON.stringify(payload),
   });
   renderCommands();
   renderRoutines();
   renderVoice();
   renderLibrary($("#chart-library"));
-  toast("Saved");
+  toast(message || "Saved");
+}
+
+function pickHtml(kind, id, on) {
+  if (!id) return `<span></span>`;
+  return `<label class="pick">
+    <input type="checkbox" data-pick-${kind}="${escapeHtml(id)}" ${on ? "checked" : ""} />
+    <i aria-hidden="true"></i>
+  </label>`;
+}
+
+function prunePicks(picks, items) {
+  const known = new Set((items || []).map((item) => item.id).filter(Boolean));
+  picks.forEach((id) => {
+    if (!known.has(id)) picks.delete(id);
+  });
+}
+
+function syncPickBar(kind, visibleIds, picks) {
+  const ids = (visibleIds || []).filter(Boolean);
+  const select = document.getElementById(`select-${kind}`);
+  const trash = document.getElementById(`delete-${kind}`);
+  const allOn = ids.length > 0 && ids.every((id) => picks.has(id));
+  if (select) {
+    select.classList.toggle("hidden", ids.length === 0);
+    select.textContent = allOn ? "clear" : "select all";
+  }
+  if (trash) trash.classList.toggle("hidden", picks.size === 0);
+}
+
+function toggleSelectAll(ids, picks) {
+  const wanted = (ids || []).filter(Boolean);
+  const allOn = wanted.length > 0 && wanted.every((id) => picks.has(id));
+  if (allOn) wanted.forEach((id) => picks.delete(id));
+  else wanted.forEach((id) => picks.add(id));
+}
+
+function setPick(picks, id, on) {
+  if (!id) return;
+  if (on) picks.add(id);
+  else picks.delete(id);
+}
+
+async function deleteSelectedCommands() {
+  const ids = new Set(commandPicks);
+  if (!ids.size) return;
+  const commands = library.commands.filter((cmd) => !ids.has(cmd.id));
+  const routines = library.routines.map((rtn) => ({
+    ...rtn,
+    steps: (rtn.steps || []).filter((step) => !ids.has(step.command_id)),
+  }));
+  commandPicks.clear();
+  await persist({ ...library, commands, routines }, "Deleted");
+}
+
+async function deleteSelectedRoutines() {
+  const ids = new Set(routinePicks);
+  if (!ids.size) return;
+  const routines = library.routines.filter((rtn) => !ids.has(rtn.id));
+  routinePicks.clear();
+  await persist({ ...library, routines }, "Deleted");
+}
+
+async function deleteSelectedVoice() {
+  const ids = new Set(voicePicks);
+  if (!ids.size) return;
+  const variables = (library.variables || []).filter((item) => !ids.has(item.id));
+  voicePicks.clear();
+  await persist({ ...library, variables }, "Deleted");
+}
+
+function currentView() {
+  return document.querySelector("nav button.active")?.dataset.view || "overview";
 }
 
 function showView(name) {
+  if (name !== "scout") scoutPoll += 1;
+  if (name !== "scribe") scribePoll += 1;
   document.querySelectorAll(".view").forEach((el) => el.classList.add("hidden"));
   $(`#view-${name}`).classList.remove("hidden");
   document.querySelectorAll("nav button").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.view === name);
   });
   pulseNav(name);
+  if ((location.hash || "").replace("#", "") !== name) {
+    history.replaceState(null, "", `#${name}`);
+  }
   if (name === "overview") playOverviewMotion();
+  if (!appBooted || editorOpen() || lockBlocks()) return;
+  refreshView(name).catch((err) => toast(err.message));
 }
 
 function pulsePress(el) {
@@ -2776,68 +3264,108 @@ function editorOpen() {
 
 async function refreshStats() {
   if (editorOpen() || lockBlocks()) return;
-  const [lib, stats] = await Promise.all([api("/api/library"), api(statsUrl())]);
+  const stats = await api(statsUrl());
   if (editorOpen()) return;
-  library = lib;
   renderStats(stats);
+  renderFindHits();
+  if (chartLayout().some((item) => item.id === "library")) await refreshLibrary();
 }
 
-async function refresh({ pull = false } = {}) {
-  if (editorOpen() || settingsOpen() || lockBlocks()) return;
-  if (pull) {
-    try {
-      await api("/api/sync/pull", { method: "POST" });
-    } catch (_err) {
-      try {
-        applySettingsAttention((await api("/api/sync/status")).sync);
-      } catch {
-        /* keep the page usable if the cloud copy cannot be reached */
-      }
-    }
-  }
-  const [lib, stats, prefs] = await Promise.all([
-    api("/api/library"),
-    api(statsUrl()),
-    api("/api/settings"),
-  ]);
-  if (editorOpen() || settingsOpen()) return;
-  library = lib;
-  mergeSettings(prefs);
+async function refreshLibrary() {
+  if (editorOpen() || lockBlocks()) return;
+  library = await api("/api/library");
+  if (editorOpen()) return;
   renderCommands();
   renderRoutines();
   renderVoice();
-  renderStats(stats);
-  renderPersonalization();
+  renderFindHits();
+  renderLibrary($("#chart-library"));
 }
 
-function startAutoRefresh() {
-  if (autoRefreshStarted) return;
-  autoRefreshStarted = true;
-  let lastCloud = Date.now();
-  const tickStats = () => {
-    if (document.hidden || editorOpen() || lockBlocks()) return;
-    refreshStats().catch((err) => toast(err.message));
-    if (settingsOpen()) return;
-    const now = Date.now();
-    if (now - lastCloud < CLOUD_MS) return;
-    lastCloud = now;
-    refresh({ pull: true }).catch((err) => toast(err.message));
+async function loadPrefs() {
+  const prefs = await api("/api/settings");
+  mergeSettings(prefs);
+  renderPersonalization();
+  renderScoutSettings();
+}
+
+async function refreshView(name) {
+  const view = name || currentView();
+  if (view === "overview") return refreshStats();
+  if (view === "commands" || view === "routines" || view === "voice") return refreshLibrary();
+  if (view === "scout") return refreshScout();
+  if (view === "scribe") return refreshScribe();
+}
+
+async function refresh() {
+  if (editorOpen() || settingsOpen() || lockBlocks()) return;
+  await loadPrefs();
+  await refreshView(currentView());
+}
+
+function startPresence() {
+  if (presenceStarted) return;
+  presenceStarted = true;
+  const tick = () => {
+    if (document.hidden || lockBlocks() || editorOpen() || settingsOpen()) return;
+    if (currentView() === "scout" || openBriefId) {
+      refreshScout().catch(() => {});
+      return;
+    }
+    if (currentView() === "scribe" || openNoteId) {
+      refreshScribe().catch(() => {});
+      return;
+    }
+    api(`/api/presence?${clientQuery()}`)
+      .then((data) => {
+        applyTabState(data);
+        if (tabStale) return;
+        if (data.open_note) {
+          if (currentView() !== "scribe") showView("scribe");
+          else refreshScribe().catch(() => {});
+          return;
+        }
+        if (data.open_id) {
+          if (currentView() !== "scout") showView("scout");
+          else refreshScout().catch(() => {});
+          return;
+        }
+        const view = data.focus;
+        if (view && view !== currentView()) {
+          showView(view);
+          return;
+        }
+        if (view) refreshView(view).catch(() => {});
+        else if (currentView() === "overview") refreshStats().catch(() => {});
+      })
+      .catch(() => {});
   };
-  setInterval(tickStats, STATS_MS);
-  const onActivate = () => {
-    if (document.hidden || editorOpen() || lockBlocks()) return;
-    refreshStats().catch((err) => toast(err.message));
-  };
-  document.addEventListener("visibilitychange", onActivate);
-  window.addEventListener("focus", onActivate);
+  tick();
+  setInterval(tick, PRESENCE_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) tick();
+  });
 }
 
 async function boot() {
   bindLockUi();
+  bindPlayground();
+  bindPagers();
+  bindScribe();
   bindPressFeedback();
   $("#wordmark-pulse")?.addEventListener("click", pulseWordmark);
   document.querySelectorAll("nav button").forEach((btn) => {
     btn.addEventListener("click", () => showView(btn.dataset.view));
+  });
+  const bootView = (location.hash || "").replace("#", "");
+  if (VIEWS.includes(bootView)) showView(bootView);
+  window.addEventListener("hashchange", () => {
+    const name = (location.hash || "").replace("#", "");
+    if (VIEWS.includes(name)) showView(name);
+  });
+  window.addEventListener("pagehide", () => {
+    if (openBriefId) setBriefContinue("").catch(() => {});
+    if (playgroundOpen) closePlayground();
   });
   $("#refresh-stats")?.addEventListener("click", () => {
     refreshStats()
@@ -2850,6 +3378,60 @@ async function boot() {
   $("#add-command").addEventListener("click", () => openCommandEditor(-1));
   $("#add-routine").addEventListener("click", () => openRoutineEditor(-1));
   $("#add-voice")?.addEventListener("click", () => openVoiceEditor(-1));
+  $("#select-commands")?.addEventListener("click", () => {
+    toggleSelectAll(library.commands.filter(commandMatches).map((cmd) => cmd.id), commandPicks);
+    renderCommands();
+  });
+  $("#delete-commands")?.addEventListener("click", () => {
+    deleteSelectedCommands().catch((err) => toast(err.message, "error"));
+  });
+  $("#select-routines")?.addEventListener("click", () => {
+    toggleSelectAll(library.routines.filter(routineMatches).map((rtn) => rtn.id), routinePicks);
+    renderRoutines();
+  });
+  $("#delete-routines")?.addEventListener("click", () => {
+    deleteSelectedRoutines().catch((err) => toast(err.message, "error"));
+  });
+  $("#select-voice")?.addEventListener("click", () => {
+    toggleSelectAll((library.variables || []).filter(voiceMatches).map((item) => item.id), voicePicks);
+    renderVoice();
+  });
+  $("#delete-voice")?.addEventListener("click", () => {
+    deleteSelectedVoice().catch((err) => toast(err.message, "error"));
+  });
+  $("#command-groups")?.addEventListener("click", (event) => {
+    if (event.target.closest(".pick")) return;
+    const row = event.target.closest("[data-edit-command]");
+    if (row) openCommandEditor(Number(row.dataset.editCommand));
+  });
+  $("#command-groups")?.addEventListener("change", (event) => {
+    const box = event.target.closest("[data-pick-command]");
+    if (!box) return;
+    setPick(commandPicks, box.dataset.pickCommand, box.checked);
+    renderCommands();
+  });
+  $("#routine-list")?.addEventListener("click", (event) => {
+    if (event.target.closest(".pick")) return;
+    const row = event.target.closest("[data-edit-routine]");
+    if (row) openRoutineEditor(Number(row.dataset.editRoutine));
+  });
+  $("#routine-list")?.addEventListener("change", (event) => {
+    const box = event.target.closest("[data-pick-routine]");
+    if (!box) return;
+    setPick(routinePicks, box.dataset.pickRoutine, box.checked);
+    renderRoutines();
+  });
+  $("#voice-list")?.addEventListener("click", (event) => {
+    if (event.target.closest(".pick")) return;
+    const row = event.target.closest("[data-edit-voice]");
+    if (row) openVoiceEditor(Number(row.dataset.editVoice));
+  });
+  $("#voice-list")?.addEventListener("change", (event) => {
+    const box = event.target.closest("[data-pick-voice]");
+    if (!box) return;
+    setPick(voicePicks, box.dataset.pickVoice, box.checked);
+    renderVoice();
+  });
   $("#editor-cancel").addEventListener("click", () => {
     stopRecording();
     $("#editor").close();
@@ -2861,28 +3443,23 @@ async function boot() {
   $("#editor-form").addEventListener("keydown", (event) => {
     if (recording && event.key === "Enter") event.preventDefault();
   });
-  $("#command-search").addEventListener("input", (event) => {
-    commandQuery = event.target.value;
-    renderCommands();
-  });
-  $("#voice-search")?.addEventListener("input", (event) => {
-    voiceQuery = event.target.value;
-    renderVoice();
-  });
   $("#activity-search").addEventListener("input", (event) => {
     activityQuery = event.target.value;
+    listPages.activity = 1;
     renderActivity();
   });
   $("#command-filters").addEventListener("click", (event) => {
     const btn = event.target.closest("[data-filter]");
     if (!btn) return;
     commandFilter = btn.dataset.filter;
+    listPages.commands = 1;
     $("#command-filters").querySelectorAll("button").forEach((el) => {
       el.classList.toggle("active", el === btn);
     });
     renderCommands();
   });
   bindCharts();
+  bindFind();
   bindSettings();
   window.matchMedia("(prefers-reduced-motion: reduce)").addEventListener("change", () => {
     applyAppearance(settings);
@@ -2907,13 +3484,14 @@ async function finishBoot() {
   if (appBooted) return;
   appBooted = true;
   try {
-    await refresh({ pull: true });
+    await loadPrefs();
     renderAccount();
-    playOverviewMotion({ force: true });
+    await refreshView(currentView());
+    if (currentView() === "overview") playOverviewMotion({ force: true });
   } catch (err) {
     toast(err.message);
   }
-  startAutoRefresh();
+  startPresence();
 }
 
 function renderPersonalization() {
@@ -2987,6 +3565,7 @@ function renderModel() {
     else if (modelState.status === "error") status.textContent = modelState.error || "Could not load model.";
     else status.textContent = "";
   }
+  renderScoutSettings();
 }
 
 function renderModelAddForm() {
@@ -2997,6 +3576,934 @@ function renderModelAddForm() {
     add.textContent = modelAddOpen ? "×" : "+";
     add.setAttribute("aria-label", modelAddOpen ? "Cancel add model" : "Add custom model");
   }
+}
+
+function scoutSettings() {
+  return settings.scout || {};
+}
+
+function scoutModelFor(scout, provider) {
+  const models = scout.models || {};
+  const key = provider || scout.provider;
+  if (models[key]) return models[key];
+  if (key === "bedrock") return scout.bedrock_model || "";
+  if (key === scout.provider) return scout.model || "";
+  return "";
+}
+
+function renderScoutSettings() {
+  const scout = scoutSettings();
+  const providers = scout.providers || ["openai", "anthropic", "grok", "kimi", "bedrock", "local"];
+  const defaults = scout.default_models || {};
+  const box = $("#scout-providers");
+  if (box) {
+    box.innerHTML = providers
+      .map(
+        (id) =>
+          `<button type="button" data-scout-provider="${id}" class="${id === scout.provider ? "active" : ""}">${id}</button>`
+      )
+      .join("");
+  }
+  const model = $("#scout-model");
+  if (model && document.activeElement !== model) {
+    model.value = scoutModelFor(scout, scout.provider) || defaults[scout.provider] || "";
+    model.placeholder =
+      scout.provider === "bedrock"
+        ? defaults.bedrock || "us.anthropic.claude-sonnet-5"
+        : "model";
+  }
+  const baseWrap = $("#scout-base-wrap");
+  const base = $("#scout-base-url");
+  if (baseWrap) baseWrap.classList.toggle("hidden", scout.provider !== "local");
+  if (base && document.activeElement !== base) base.value = scout.base_url || "";
+  const bedrockWrap = $("#scout-bedrock-wrap");
+  if (bedrockWrap) bedrockWrap.classList.toggle("hidden", scout.provider !== "bedrock");
+  const region = $("#scout-bedrock-region");
+  if (region && document.activeElement !== region) region.value = scout.bedrock_region || "";
+  const hasKey = Boolean(scout.has_key);
+  const editing = scoutKeyEditing || !hasKey;
+  const key = $("#scout-key");
+  if (key) {
+    key.placeholder = scout.provider === "bedrock" ? "api key or access:secret" : "api key";
+    if (!editing) key.value = "";
+  }
+  $("#scout-key-wrap")?.classList.toggle("hidden", !editing);
+  $("#change-scout-key")?.classList.toggle("hidden", !hasKey || scoutKeyEditing);
+  $("#cancel-scout-key")?.classList.toggle("hidden", !(hasKey && scoutKeyEditing));
+  const status = $("#scout-key-status");
+  if (status) {
+    if (scout.provider === "local") status.textContent = "local endpoint, key optional";
+    else if (scout.provider === "bedrock") status.textContent = hasKey ? "key set" : "api key, access:secret, or ~/.aws";
+    else status.textContent = hasKey ? "key set" : "no key";
+  }
+  const locked = !scoutReady();
+  $("#scout-settings")?.classList.toggle("is-locked", locked);
+  $("#scout-lock-hint")?.classList.toggle("hidden", !locked);
+  const catalog = scout.tool_catalog || [
+    { id: "search", label: "search", hint: "public web" },
+    { id: "weather", label: "weather", hint: "wttr.in place" },
+    { id: "fetch", label: "fetch", hint: "a public page" },
+    { id: "open_page", label: "browser", hint: "queue a site" },
+    { id: "run_script", label: "script", hint: "bash or applescript" },
+    { id: "write_file", label: "write file", hint: "under home" },
+    { id: "read_file", label: "read file", hint: "under home" },
+    { id: "capture_screen", label: "screen", hint: "opt in, current display" },
+  ];
+  const enabled = new Set(scout.tools || ["search", "weather", "fetch", "open_page", "run_script", "write_file", "read_file"]);
+  const auto = new Set(scout.auto || ["search", "weather", "fetch", "open_page"]);
+  const tools = $("#scout-tools");
+  if (tools) {
+    tools.innerHTML = catalog
+      .map((item) => {
+        const on = enabled.has(item.id);
+        const skip = auto.has(item.id);
+        return `<div class="scout-tool">
+          <div><strong>${escapeHtml(item.label)}</strong><span> ${escapeHtml(item.hint || "")}</span></div>
+          <label class="scout-tool-flag">use <button type="button" class="switch" data-scout-tool="${item.id}" aria-pressed="${on ? "true" : "false"}" aria-label="Use ${item.label}"><i></i></button></label>
+          <label class="scout-tool-flag">no confirm <button type="button" class="switch" data-scout-auto="${item.id}" aria-pressed="${skip ? "true" : "false"}" aria-label="Skip confirm for ${item.label}"><i></i></button></label>
+        </div>`;
+      })
+      .join("");
+  }
+  fillChoice($("#scout-max-tokens"), scout.token_limits || [0, 2000, 4000, 8000, 16000, 32000], finiteNumber(scout.max_tokens, 8000), tokenLabel);
+  fillChoice($("#scout-duration"), scout.duration_limits || [0, 30, 60, 90, 180, 300], finiteNumber(scout.duration_sec, 90), durationLabel);
+  const context = $("#scout-context");
+  if (context && document.activeElement !== context) context.value = scout.context || "";
+  const mcps = $("#scout-mcps");
+  if (mcps) {
+    const items = scout.mcps || [];
+    mcps.innerHTML = items.length
+      ? items
+          .map((item) => {
+            const label = item.name || item.command || item.url || item.id;
+            const meta = item.transport === "http" ? item.url || "http" : item.command || "stdio";
+            const envMark = item.has_env ? " env" : "";
+            return `<div class="mcp-row">
+              <div><strong>${escapeHtml(label)}</strong><span> ${escapeHtml(meta)}${envMark}</span></div>
+              <label class="scout-tool-flag">no confirm <button type="button" class="switch" data-mcp-auto="${escapeHtml(item.id)}" aria-pressed="${item.auto ? "true" : "false"}"><i></i></button></label>
+              <button type="button" class="text-btn" data-remove-mcp="${escapeHtml(item.id)}">remove</button>
+            </div>`;
+          })
+          .join("")
+      : `<p class="hint-line">stdio command or http url</p>`;
+  }
+  document.querySelectorAll("[data-mcp-transport]").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.mcpTransport === mcpTransport);
+  });
+  $("#mcp-stdio-wrap")?.classList.toggle("hidden", mcpTransport !== "stdio");
+  $("#mcp-http-wrap")?.classList.toggle("hidden", mcpTransport !== "http");
+  $("#mcp-env-wrap")?.classList.toggle("hidden", mcpTransport !== "stdio");
+}
+
+function fillChoice(select, values, current, labelFn) {
+  if (!select || select === document.activeElement) return;
+  select.innerHTML = values
+    .map((value) => `<option value="${value}"${Number(current) === Number(value) ? " selected" : ""}>${labelFn(value)}</option>`)
+    .join("");
+}
+
+function tokenLabel(n) {
+  return Number(n) === 0 ? "no limit" : `${n}`;
+}
+
+function durationLabel(sec) {
+  const n = Number(sec);
+  if (n === 0) return "no limit";
+  if (n >= 60 && n % 60 === 0) return `${n / 60} min`;
+  return `${n} sec`;
+}
+
+function finiteNumber(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+async function saveScoutSettings(patch) {
+  const data = await api("/api/scout/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  settings.scout = data;
+  renderScoutSettings();
+}
+
+async function saveScoutKey() {
+  const key = ($("#scout-key")?.value || "").trim();
+  if (!key) {
+    toast("Paste a key first.", "error");
+    return;
+  }
+  const data = await api("/api/scout/key", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider: scoutSettings().provider, key }),
+  });
+  settings.scout = data;
+  const box = $("#scout-key");
+  if (box) box.value = "";
+  scoutKeyEditing = false;
+  renderScoutSettings();
+  toast("Key saved");
+}
+
+function toggleScoutTool(name) {
+  const scout = scoutSettings();
+  const tools = new Set(scout.tools || ["search", "weather", "fetch", "open_page", "run_script", "write_file", "read_file"]);
+  if (tools.has(name)) tools.delete(name);
+  else tools.add(name);
+  const auto = (scout.auto || []).filter((item) => tools.has(item));
+  saveScoutSettings({ tools: [...tools], auto }).catch((err) => toast(err.message));
+}
+
+function toggleScoutAuto(name) {
+  const scout = scoutSettings();
+  const tools = new Set(scout.tools || []);
+  if (!tools.has(name)) return;
+  const auto = new Set(scout.auto || []);
+  if (auto.has(name)) auto.delete(name);
+  else auto.add(name);
+  saveScoutSettings({ auto: [...auto] }).catch((err) => toast(err.message));
+}
+
+function toggleMcpAuto(id) {
+  const mcps = (scoutSettings().mcps || []).map((item) =>
+    item.id === id ? { ...item, auto: !item.auto } : item
+  );
+  saveScoutSettings({ mcps }).catch((err) => toast(err.message));
+}
+
+function removeMcp(id) {
+  const mcps = (scoutSettings().mcps || []).filter((item) => item.id !== id);
+  saveScoutSettings({ mcps }).catch((err) => toast(err.message));
+}
+
+async function addMcp() {
+  const name = ($("#mcp-name")?.value || "").trim();
+  const command = ($("#mcp-command")?.value || "").trim();
+  const args = ($("#mcp-args")?.value || "").trim();
+  const url = ($("#mcp-url")?.value || "").trim();
+  const env = parseMcpEnv($("#mcp-env")?.value || "");
+  if (mcpTransport === "http" && !url) {
+    toast("Paste an MCP url.", "error");
+    return;
+  }
+  if (mcpTransport !== "http" && !command) {
+    toast("Add a command.", "error");
+    return;
+  }
+  const mcps = [
+    ...(scoutSettings().mcps || []),
+    {
+      id: `mcp-${Math.random().toString(16).slice(2, 10)}`,
+      name: name || command || url,
+      transport: mcpTransport,
+      command,
+      args,
+      url,
+      env,
+      auto: false,
+      enabled: true,
+    },
+  ];
+  await saveScoutSettings({ mcps });
+  if ($("#mcp-name")) $("#mcp-name").value = "";
+  if ($("#mcp-command")) $("#mcp-command").value = "";
+  if ($("#mcp-args")) $("#mcp-args").value = "";
+  if ($("#mcp-url")) $("#mcp-url").value = "";
+  if ($("#mcp-env")) $("#mcp-env").value = "";
+  toast("MCP saved");
+}
+
+function parseMcpEnv(text) {
+  const env = {};
+  String(text || "")
+    .split("\n")
+    .forEach((line) => {
+      const cut = line.indexOf("=");
+      if (cut <= 0) return;
+      const key = line.slice(0, cut).trim();
+      if (key) env[key] = line.slice(cut + 1).trim();
+    });
+  return env;
+}
+
+async function refreshScout() {
+  if (currentView() !== "scout" && !openBriefId) {
+    scoutPoll += 1;
+    return;
+  }
+  const data = await api(`/api/scout?${clientQuery()}`);
+  applyTabState(data);
+  if (tabStale) {
+    scoutPoll += 1;
+    return;
+  }
+  scoutState = { current: data.current || null, runs: data.runs || [] };
+  const activeView = currentView();
+  if (data.focus && data.focus !== activeView) showView(data.focus);
+  const busy = scoutState.current && ["thinking", "tool", "needs_confirm"].includes(scoutState.current.status);
+  if (data.open_id && data.open_id !== openBriefId) {
+    await openBrief(data.open_id);
+  } else if (!openBriefId && data.continue_id) {
+    setBriefContinue("").catch(() => {});
+  } else if (openBriefId && !busy && data.continue_id !== openBriefId) {
+    setBriefContinue(openBriefId).catch(() => {});
+  }
+  renderScout();
+  renderFindHits();
+  if (openBriefId) renderBriefDialog();
+  const watching = currentView() === "scout" || Boolean(openBriefId);
+  if (watching && !document.hidden && !lockBlocks()) {
+    const gen = ++scoutPoll;
+    setTimeout(() => {
+      if (gen === scoutPoll) refreshScout().catch(() => {});
+    }, busy ? 700 : 1100);
+  } else {
+    scoutPoll += 1;
+  }
+}
+
+function bumpScribe() {
+  scribePoll += 1;
+}
+
+function beginScribeWrite() {
+  bumpScribe();
+  scribeBusy += 1;
+}
+
+function endScribeWrite() {
+  scribeBusy = Math.max(0, scribeBusy - 1);
+  bumpScribe();
+}
+
+function loadScribeGone() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SCRIBE_GONE_KEY) || "[]");
+    if (Array.isArray(raw)) raw.forEach((id) => id && scribeGone.add(String(id)));
+  } catch {
+    /* keep what we have */
+  }
+}
+
+function rememberScribeGone(ids) {
+  (ids || []).forEach((id) => {
+    const ident = String(id || "").trim();
+    if (ident) scribeGone.add(ident);
+  });
+  try {
+    localStorage.setItem(SCRIBE_GONE_KEY, JSON.stringify([...scribeGone].slice(-200)));
+  } catch {
+    /* ignore quota */
+  }
+}
+
+function applyScribeItems(items) {
+  scribeItems = (items || []).filter((item) => item && item.id && !scribeGone.has(item.id));
+}
+
+async function refreshScribe() {
+  if (scribeBusy) return;
+  if (currentView() !== "scribe" && !openNoteId) {
+    bumpScribe();
+    return;
+  }
+  const gen = ++scribePoll;
+  const data = await api(`/api/scribe?${clientQuery()}`);
+  if (gen !== scribePoll || scribeBusy) return;
+  applyTabState(data);
+  if (tabStale) return;
+  rememberScribeGone(data.gone || []);
+  applyScribeItems(data.items || []);
+  const activeView = currentView();
+  if (data.focus && data.focus !== activeView) showView(data.focus);
+  if (data.open_id && data.open_id !== openNoteId) openVocanote(data.open_id);
+  renderScribe();
+  renderFindHits();
+}
+
+function noteById(id) {
+  return (scribeItems || []).find((item) => item.id === id) || null;
+}
+
+function noteIsActionable(note) {
+  return Boolean(note && (note.is_todo || note.is_reminder));
+}
+
+function dueLabel(note) {
+  const raw = String(note?.due_at || "").trim();
+  if (!raw) return "";
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
+  return date.toLocaleString(undefined, { hour: "numeric", minute: "2-digit", month: "short", day: "numeric" }).toLowerCase();
+}
+
+function repeatLabel(note) {
+  const raw = String(note?.repeat || "").trim().toLowerCase();
+  if (!raw) return "";
+  if (["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"].includes(raw)) {
+    return `every ${raw}`;
+  }
+  return raw;
+}
+
+function toLocalInput(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function fromLocalInput(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString();
+}
+
+function renderScribe() {
+  const list = $("#scribe-list");
+  if (!list) return;
+  const visible = (scribeItems || []).filter(vocanoteMatches);
+  fillPager("#scribe-pager", "scribe", visible.length);
+  if (!scribeItems.length) {
+    list.innerHTML = `<p class="empty">say scribe, then the note</p>`;
+    return;
+  }
+  if (!visible.length) {
+    list.innerHTML = findNeedle() ? findElseHtml("scribe") : `<p class="empty">no matches.</p>`;
+    return;
+  }
+  list.innerHTML = pageSlice(visible, "scribe").map((item) => scribeRowHtml(item)).join("");
+}
+
+function scribeRowHtml(note) {
+  const marks = [];
+  if (note.is_todo) marks.push("to-do");
+  if (note.is_reminder) {
+    const when = [repeatLabel(note), dueLabel(note) || "reminder"].filter(Boolean);
+    marks.push(when.join(" · "));
+  }
+  const meta = marks.length ? `<span class="scribe-meta">${escapeHtml(marks.join(" · "))}</span>` : "";
+  return `<article class="scribe-row" data-note-id="${escapeHtml(note.id)}">
+    <span class="sku">${escapeHtml(note.sku || "vn–01")}</span>
+    <button type="button" class="scribe-open" data-scribe-open="${escapeHtml(note.id)}">
+      <span class="scribe-title">${escapeHtml(note.title || "note")}</span>
+      ${meta}
+    </button>
+    <button type="button" class="text-btn" data-scribe-delete="${escapeHtml(note.id)}">delete</button>
+  </article>`;
+}
+
+function renderVocanoteDialog() {
+  const note = noteById(openNoteId);
+  if (!note) return;
+  const kicker = $("#vocanote-kicker");
+  if (kicker) kicker.textContent = note.sku || "vocanote";
+  if ($("#vocanote-title")) $("#vocanote-title").value = note.title || "";
+  if ($("#vocanote-body")) $("#vocanote-body").value = note.body || "";
+  if ($("#vocanote-todo")) $("#vocanote-todo").checked = Boolean(note.is_todo);
+  if ($("#vocanote-reminder")) $("#vocanote-reminder").checked = Boolean(note.is_reminder);
+  const repeat = $("#vocanote-repeat");
+  if (repeat) {
+    repeat.value = note.repeat || "";
+    repeat.classList.toggle("hidden", !note.is_reminder);
+  }
+  const due = $("#vocanote-due");
+  if (due) {
+    due.value = note.due_at ? toLocalInput(note.due_at) : "";
+    due.classList.toggle("hidden", !note.is_reminder);
+  }
+  const done = $("#vocanote-done");
+  if (done) done.classList.toggle("hidden", !noteIsActionable(note));
+}
+
+function openVocanote(id) {
+  openNoteId = id;
+  renderVocanoteDialog();
+  const dialog = $("#vocanote");
+  if (dialog && !dialog.open) dialog.showModal();
+}
+
+function closeVocanote() {
+  openNoteId = "";
+  $("#vocanote")?.close();
+}
+
+function vocanoteDraft() {
+  const reminder = Boolean($("#vocanote-reminder")?.checked);
+  return {
+    id: openNoteId,
+    title: ($("#vocanote-title")?.value || "").trim(),
+    body: $("#vocanote-body")?.value || "",
+    is_todo: Boolean($("#vocanote-todo")?.checked),
+    is_reminder: reminder,
+    due_at: reminder ? fromLocalInput($("#vocanote-due")?.value || "") : "",
+    repeat: reminder ? ($("#vocanote-repeat")?.value || "") : "",
+  };
+}
+
+async function saveVocanote() {
+  const draft = vocanoteDraft();
+  if (!draft.title) {
+    toast("title is required", "error");
+    return;
+  }
+  beginScribeWrite();
+  try {
+    const data = await api("/api/scribe", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(draft),
+    });
+    applyScribeItems(data.items || scribeItems);
+    renderScribe();
+    toast("Saved");
+    closeVocanote();
+  } finally {
+    endScribeWrite();
+  }
+}
+
+async function addVocanoteFromComposer() {
+  const box = $("#scribe-new");
+  const text = (box?.value || "").trim();
+  if (!text) return;
+  beginScribeWrite();
+  try {
+    const data = await api("/api/scribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (box) box.value = "";
+    lastScribeTest = "";
+    await api("/api/model/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clear: true, sink: "scribe" }),
+      _skipLock: true,
+    }).catch(() => {});
+    applyScribeItems(data.items || scribeItems);
+    renderScribe();
+    toast("Saved");
+  } finally {
+    endScribeWrite();
+  }
+}
+
+async function dismissVocanote(id) {
+  const ident = id || openNoteId;
+  if (!ident) return;
+  beginScribeWrite();
+  try {
+    const data = await api("/api/scribe", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: ident, dismiss: true }),
+    });
+    applyScribeItems(data.items || scribeItems);
+    renderScribe();
+    if (openNoteId === ident) renderVocanoteDialog();
+    toast("done");
+  } finally {
+    endScribeWrite();
+  }
+}
+
+async function finishVocanote(id, message) {
+  const ident = id || openNoteId;
+  if (!ident) return;
+  beginScribeWrite();
+  rememberScribeGone([ident]);
+  const previous = scribeItems;
+  applyScribeItems((scribeItems || []).filter((item) => item.id !== ident));
+  if (openNoteId === ident) closeVocanote();
+  renderScribe();
+  try {
+    const data = await api("/api/scribe", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [ident] }),
+    });
+    applyScribeItems(data.items || scribeItems);
+    renderScribe();
+    toast(message || "Deleted");
+  } catch (err) {
+    scribeGone.delete(ident);
+    rememberScribeGone([]);
+    applyScribeItems(previous);
+    renderScribe();
+    throw err;
+  } finally {
+    endScribeWrite();
+  }
+}
+
+function bindScribe() {
+  loadScribeGone();
+  $("#scribe-composer")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    addVocanoteFromComposer().catch((err) => toast(err.message, "error"));
+  });
+  $("#scribe-list")?.addEventListener("click", (event) => {
+    const trash = event.target.closest("[data-scribe-delete]");
+    if (trash) {
+      finishVocanote(trash.dataset.scribeDelete, "Deleted").catch((err) => toast(err.message, "error"));
+      return;
+    }
+    const open = event.target.closest("[data-scribe-open]");
+    if (open) openVocanote(open.dataset.scribeOpen);
+  });
+  $("#vocanote-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveVocanote().catch((err) => toast(err.message, "error"));
+  });
+  $("#vocanote-cancel")?.addEventListener("click", () => closeVocanote());
+  $("#vocanote-delete")?.addEventListener("click", () => {
+    finishVocanote(openNoteId, "Deleted").catch((err) => toast(err.message, "error"));
+  });
+  $("#vocanote-done")?.addEventListener("click", () => {
+    const note = noteById(openNoteId);
+    if (note?.repeat) {
+      dismissVocanote(openNoteId).catch((err) => toast(err.message, "error"));
+      return;
+    }
+    finishVocanote(openNoteId, "Done").catch((err) => toast(err.message, "error"));
+  });
+  $("#vocanote-reminder")?.addEventListener("change", () => {
+    const on = Boolean($("#vocanote-reminder")?.checked);
+    $("#vocanote-repeat")?.classList.toggle("hidden", !on);
+    $("#vocanote-due")?.classList.toggle("hidden", !on);
+    const done = $("#vocanote-done");
+    if (done) done.classList.toggle("hidden", !on && !Boolean($("#vocanote-todo")?.checked));
+  });
+  $("#vocanote-todo")?.addEventListener("change", () => {
+    const done = $("#vocanote-done");
+    if (done) {
+      done.classList.toggle("hidden", !Boolean($("#vocanote-todo")?.checked) && !Boolean($("#vocanote-reminder")?.checked));
+    }
+  });
+  ["#scribe-new", "#vocanote-title", "#vocanote-body"].forEach((sel) => {
+    const box = $(sel);
+    if (!box) return;
+    box.addEventListener("focus", () => syncDictationListen());
+    box.addEventListener("blur", () => setTimeout(() => syncDictationListen(), 0));
+  });
+}
+
+function briefTitle(run) {
+  return (run?.title || run?.answer?.title || run?.prompt || "brief").trim() || "brief";
+}
+
+function briefById(id) {
+  if (!id) return null;
+  if (scoutState.current?.id === id) return scoutState.current;
+  return (scoutState.runs || []).find((item) => item.id === id) || null;
+}
+
+function listedBriefIds() {
+  const current = scoutState.current;
+  const busy = current && ["thinking", "tool", "needs_confirm"].includes(current.status);
+  return (scoutState.runs || [])
+    .filter((item) => !busy || item.id !== current.id)
+    .map((item) => item.id)
+    .filter(Boolean);
+}
+
+function renderScout() {
+  const live = $("#scout-live");
+  const list = $("#scout-list");
+  const cancel = $("#cancel-scout");
+  const current = scoutState.current;
+  const busy = current && ["thinking", "tool", "needs_confirm"].includes(current.status);
+  if (cancel) cancel.classList.toggle("hidden", !busy || Boolean(openBriefId && current && openBriefId === current.id));
+  if (live) {
+    const hideLive = Boolean(openBriefId && current && openBriefId === current.id);
+    live.classList.toggle("hidden", !busy || hideLive);
+    if (busy && !hideLive) live.innerHTML = scoutLiveHtml(current);
+  }
+  if (!list) return;
+  if (!settings.lock?.enabled) {
+    if (cancel) cancel.classList.add("hidden");
+    if (live) live.classList.add("hidden");
+    fillPager("#scout-pager", "scout", 0);
+    list.innerHTML = `<p class="empty">set a lock first</p>`;
+    return;
+  }
+  const rest = (scoutState.runs || []).filter((item) => !busy || item.id !== current.id);
+  const visible = rest.filter(briefMatches);
+  const known = new Set(rest.map((item) => item.id));
+  briefPicks.forEach((id) => {
+    if (!known.has(id)) briefPicks.delete(id);
+  });
+  syncPickBar("briefs", visible.map((item) => item.id), briefPicks);
+  fillPager("#scout-pager", "scout", visible.length);
+  if (!rest.length) {
+    list.innerHTML = busy ? "" : `<p class="empty">say scout, then what to do</p>`;
+    return;
+  }
+  if (!visible.length) {
+    list.innerHTML = findNeedle() ? findElseHtml("scout") : `<p class="empty">no matches.</p>`;
+    return;
+  }
+  list.innerHTML = pageSlice(visible, "scout").map((item) => briefRowHtml(item, rest.indexOf(item))).join("");
+}
+
+function briefTurns(run) {
+  if (Array.isArray(run?.turns) && run.turns.length) return run.turns;
+  const prompt = run?.prompt || "";
+  const follow = (run?.follow_up || "").trim();
+  if (follow) {
+    return [
+      { prompt, answer: null, status: "done", error: "" },
+      { prompt: follow, answer: run.answer, status: run.status, error: run.error, confirm: run.confirm },
+    ];
+  }
+  return [{ prompt, answer: run?.answer, status: run?.status, error: run?.error, confirm: run?.confirm }];
+}
+
+function briefCanInsert(run) {
+  return Boolean(
+    run?.status === "done" && (run.want_insert || run.auto_insert) && String(run.insert_text || "").trim()
+  );
+}
+
+function briefAnswerText(run) {
+  const turns = briefTurns(run);
+  let source = run;
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    if (turns[i]?.answer || turns[i]?.error) {
+      source = turns[i];
+      break;
+    }
+  }
+  if (source?.status === "error" && source.error) return String(source.error);
+  const blocks = source?.answer?.blocks || [];
+  const parts = [];
+  for (const block of blocks) {
+    if ((block.type === "lead" || block.type === "note" || block.type === "error") && block.text) {
+      parts.push(block.text);
+    } else if (block.type === "list" && block.items?.length) {
+      parts.push(block.items.join(" · "));
+    } else if (block.type === "facts" && block.rows?.length) {
+      parts.push(block.rows.map((row) => row[1] || row[0]).filter(Boolean).join(" · "));
+    } else if (block.type === "code" && block.text) {
+      parts.push(block.text);
+    }
+    if (parts.join(" ").length >= 220) break;
+  }
+  return parts.join(" ").replace(/\s+/g, " ").trim();
+}
+
+function briefPreview(run) {
+  const text = briefAnswerText(run);
+  if (!text) return { text: "", full: true };
+  if (text.length <= 160) return { text, full: true };
+  const cut = text.slice(0, 140);
+  const trimmed = cut.replace(/\s+\S*$/, "");
+  return { text: `${trimmed || cut}…`, full: false };
+}
+
+function briefSku(run, fallbackIndex) {
+  if (run?.sku) return run.sku;
+  const n = Number(run?.n);
+  if (n > 0) return `sc–${String(n).padStart(2, "0")}`;
+  if (fallbackIndex >= 0) return `sc–${String(fallbackIndex + 1).padStart(2, "0")}`;
+  return "sc–01";
+}
+
+function briefRowHtml(run, index) {
+  const status = run.status || "done";
+  const picked = briefPicks.has(run.id);
+  const preview = briefPreview(run);
+  const previewHtml = preview.text
+    ? `<span class="brief-preview${preview.full ? " is-full" : ""}">${escapeHtml(preview.text)}</span>`
+    : "";
+  return `<article class="brief${picked ? " is-on" : ""}" data-brief-id="${escapeHtml(run.id)}">
+    <label class="brief-pick">
+      <input type="checkbox" data-brief-pick="${escapeHtml(run.id)}" ${picked ? "checked" : ""} />
+      <i aria-hidden="true"></i>
+    </label>
+    <button type="button" class="brief-open" data-brief-open="${escapeHtml(run.id)}">
+      <span class="brief-mark" data-status="${escapeHtml(status)}" aria-hidden="true"></span>
+      <span class="brief-copy">
+        <span class="brief-title">${escapeHtml(briefTitle(run))}</span>
+        ${previewHtml}
+      </span>
+      <span class="sku">${escapeHtml(briefSku(run, index))}</span>
+    </button>
+  </article>`;
+}
+
+function scoutConfirmHtml(run) {
+  if (run.status !== "needs_confirm" || !run.confirm) return "";
+  return `<div class="scout-confirm glass glass-box">
+        <div class="glass-fill" aria-hidden="true"></div>
+        <p class="scout-status">${escapeHtml(run.confirm.title || "confirm")}</p>
+        <pre>${escapeHtml(run.confirm.preview || "")}</pre>
+        <div class="scout-confirm-actions">
+          <button type="button" class="primary" data-scout-confirm="1">yes</button>
+          <button type="button" class="ghost" data-scout-confirm="0">no</button>
+        </div>
+      </div>`;
+}
+
+function scoutLiveHtml(run) {
+  const status = run.status || "thinking";
+  return `<div class="scout-live-row">
+      <span class="brief-mark" data-status="${escapeHtml(status)}" aria-hidden="true"></span>
+      <div>
+        <p class="scout-prompt">${escapeHtml(run.follow_up || run.prompt || "")}</p>
+        <p class="scout-status">${escapeHtml(status)}${run.tool_name ? ` / ${escapeHtml(run.tool_name)}` : ""}</p>
+      </div>
+      <span class="sku">${escapeHtml(briefSku(run, 0))}</span>
+    </div>
+    ${scoutConfirmHtml(run)}`;
+}
+
+function renderScoutBlocks(answer) {
+  const blocks = answer?.blocks || [];
+  return blocks
+    .map((block) => {
+      if (block.type === "lead") return `<p class="scout-lead">${escapeHtml(block.text || "")}</p>`;
+      if (block.type === "note" || block.type === "error") {
+        return `<p class="scout-${block.type}">${escapeHtml(block.text || "")}</p>`;
+      }
+      if (block.type === "code") return `<pre class="scout-code">${escapeHtml(block.text || "")}</pre>`;
+      if (block.type === "facts") {
+        const rows = (block.rows || [])
+          .map((row) => `<div><dt>${escapeHtml(row[0] || "")}</dt><dd>${escapeHtml(row[1] || "")}</dd></div>`)
+          .join("");
+        return `<dl class="scout-facts">${rows}</dl>`;
+      }
+      if (block.type === "list") {
+        const items = (block.items || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+        return `<ul class="scout-list">${items}</ul>`;
+      }
+      if (block.type === "links") {
+        const items = (block.items || [])
+          .map((item) => `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.label || item.url)}</a>`)
+          .join("");
+        return `<div class="scout-links">${items}</div>`;
+      }
+      return "";
+    })
+    .join("");
+}
+
+function briefThreadHtml(run) {
+  const turns = briefTurns(run);
+  return turns
+    .map((turn, index) => {
+      const last = index === turns.length - 1;
+      const status = turn.status || (last ? run.status : "done");
+      const live = last && ["thinking", "tool", "needs_confirm"].includes(status);
+      const blocks = renderScoutBlocks(turn.answer);
+      const hasErrorBlock = (turn.answer?.blocks || []).some((block) => block.type === "error");
+      const error = turn.error && status === "error" && !hasErrorBlock
+        ? `<p class="scout-error">${escapeHtml(turn.error)}</p>`
+        : "";
+      const liveHtml = live
+        ? `<p class="brief-turn-status">${escapeHtml(status)}${run.tool_name ? ` / ${escapeHtml(run.tool_name)}` : ""}</p>`
+        : "";
+      const confirm = last ? scoutConfirmHtml(run) : "";
+      const body = `${error}${blocks}${liveHtml}${confirm}` || (live ? "" : `<p class="empty">no answer</p>`);
+      return `<section class="brief-turn">
+        <p class="brief-turn-prompt">${escapeHtml(turn.prompt || "")}</p>
+        ${body}
+      </section>`;
+    })
+    .join("");
+}
+
+function renderBriefDialog() {
+  const run = briefById(openBriefId);
+  const dialog = $("#brief");
+  if (!dialog || !run) {
+    openBriefId = "";
+    dialog?.close();
+    return;
+  }
+  const title = $("#brief-title");
+  const thread = $("#brief-thread");
+  const kicker = $("#brief-kicker");
+  const busyHere = ["thinking", "tool", "needs_confirm"].includes(run.status);
+  if (title && document.activeElement !== title) title.value = briefTitle(run);
+  if (kicker) kicker.textContent = briefSku(run);
+  if (thread) thread.innerHTML = briefThreadHtml(run);
+  $("#brief-hint")?.classList.toggle("hidden", busyHere);
+  $("#brief-cancel")?.classList.toggle("hidden", !busyHere);
+  $("#brief-insert")?.classList.toggle("hidden", busyHere || !briefCanInsert(run));
+  if (busyHere) {
+    const sheet = $(".brief-sheet");
+    if (sheet) sheet.scrollTop = sheet.scrollHeight;
+  }
+}
+
+async function setBriefContinue(id) {
+  await api("/api/scout/continue", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: id || "" }),
+  });
+}
+
+async function openBrief(id) {
+  openBriefId = id;
+  renderBriefDialog();
+  closePlayground();
+  $("#brief")?.showModal();
+  try {
+    await setBriefContinue(id);
+  } catch (err) {
+    toast(err.message, "error");
+  }
+  if (openBriefId !== id) setBriefContinue("").catch(() => {});
+}
+
+function closeBrief() {
+  $("#brief")?.close();
+}
+
+async function insertOpenBrief() {
+  if (!openBriefId) return;
+  await api("/api/scout/insert", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: openBriefId }),
+  });
+  toast("Inserted");
+}
+
+async function saveBriefTitle() {
+  const title = ($("#brief-title")?.value || "").trim();
+  if (!openBriefId || !title) return;
+  const data = await api("/api/scout/title", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: openBriefId, title }),
+  });
+  const run = data.run;
+  if (!run) return;
+  scoutState.runs = (scoutState.runs || []).map((item) => (item.id === run.id ? { ...item, ...run } : item));
+  if (scoutState.current?.id === run.id) scoutState.current = { ...scoutState.current, ...run };
+  renderScout();
+}
+
+async function deleteBriefs(ids) {
+  const wanted = ids.filter(Boolean);
+  if (!wanted.length) return;
+  const data = await api("/api/scout/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: wanted }),
+  });
+  wanted.forEach((id) => briefPicks.delete(id));
+  if (wanted.includes(openBriefId)) closeBrief();
+  scoutState = { current: data.current || null, runs: data.runs || [] };
+  renderScout();
 }
 
 function submitCustomModel() {
@@ -3014,37 +4521,76 @@ async function refreshModel() {
 }
 
 function applyModelTest(data) {
-  const box = $("#model-test");
-  const hint = $("#model-test-hint");
   if (!data) return;
+  const sink = data.sink || "test";
   const incoming = data.text || "";
-  if (box && incoming !== lastModelTest) {
-    if (incoming.startsWith(lastModelTest)) box.value += incoming.slice(lastModelTest.length);
-    else box.value = incoming;
+  if (sink === "scribe") {
+    const box = document.activeElement;
+    const live = box && ["scribe-new", "vocanote-title", "vocanote-body"].includes(box.id) ? box : $("#scribe-new");
+    if (incoming !== lastScribeTest) {
+      const extra = incoming.startsWith(lastScribeTest) ? incoming.slice(lastScribeTest.length) : null;
+      if (live) {
+        if (extra != null) live.value += extra;
+        else if (!String(live.value || "").trim()) live.value = incoming;
+      }
+      lastScribeTest = incoming;
+    }
+    const listening = data.phase === "recording";
+    $("#scribe-new")?.classList.toggle("is-listening", listening);
+    const hint = $("#scribe-hint");
+    if (hint) {
+      if (data.phase === "recording") hint.textContent = "listening";
+      else if (data.phase === "busy") hint.textContent = "transcribing";
+      else hint.innerHTML = "type, or hold <kbd>fn</kbd> while this field is focused";
+    }
+    return;
+  }
+  const boxes = [$("#model-test"), $("#playground-text")].filter(Boolean);
+  const hints = [$("#model-test-hint"), $("#playground-hint")];
+  if (incoming !== lastModelTest) {
+    const extra = incoming.startsWith(lastModelTest) ? incoming.slice(lastModelTest.length) : null;
+    boxes.forEach((box) => {
+      if (extra != null) box.value += extra;
+      else box.value = incoming;
+    });
     lastModelTest = incoming;
   }
-  if (box) box.classList.toggle("is-listening", data.phase === "recording");
-  if (hint) {
+  const listening = data.phase === "recording";
+  boxes.forEach((box) => box.classList.toggle("is-listening", listening));
+  hints.forEach((hint) => {
+    if (!hint) return;
     if (data.phase === "recording") hint.textContent = "listening";
     else if (data.phase === "busy") hint.textContent = "transcribing";
+    else if (hint.id === "playground-hint") hint.innerHTML = "hold <kbd>fn</kbd> · command mode off";
     else hint.innerHTML = "hold <kbd>fn</kbd>";
-  }
+  });
+}
+
+function scribeDictateOpen() {
+  const el = document.activeElement;
+  return Boolean(el && ["scribe-new", "vocanote-title", "vocanote-body"].includes(el.id));
+}
+
+function dictationListenOpen() {
+  return playgroundOpen || modelPaneOpen() || scribeDictateOpen();
 }
 
 async function refreshModelTest() {
   try {
-    applyModelTest(await api("/api/model/test"));
+    applyModelTest(await api("/api/model/test", { _skipLock: true }));
   } catch {
     /* endpoint missing until the app is restarted */
   }
 }
 
-function syncModelTest(on) {
-  if (on) {
+function syncDictationListen() {
+  if (lockBlocks()) return;
+  if (dictationListenOpen()) {
     api("/api/model/test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ listen: true }),
+      body: JSON.stringify({ listen: true, sink: scribeDictateOpen() ? "scribe" : "test" }),
+      _skipLock: true,
     })
       .then(applyModelTest)
       .catch(() => {});
@@ -3056,6 +4602,7 @@ function syncModelTest(on) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ listen: false }),
+    _skipLock: true,
   }).catch(() => {});
 }
 
@@ -3063,19 +4610,245 @@ function pollModel() {
   const gen = ++modelPoll;
   const tick = () => {
     if (gen !== modelPoll) return;
-    if (!$("#settings")?.open) return;
-    const testing = modelPaneOpen();
+    const settingsLive = Boolean($("#settings")?.open);
+    const testing = dictationListenOpen();
     const loading = modelState.status === "loading";
-    Promise.all([refreshModel(), testing ? refreshModelTest() : Promise.resolve()])
+    if (!settingsLive && !testing && !loading) return;
+    const jobs = [];
+    if (settingsLive || loading) jobs.push(refreshModel());
+    if (testing) jobs.push(refreshModelTest());
+    Promise.all(jobs.length ? jobs : [Promise.resolve()])
       .then(() => {
         if (gen !== modelPoll) return;
-        if (loading || modelState.status === "loading" || modelPaneOpen()) {
+        if (modelState.status === "loading" || dictationListenOpen()) {
           setTimeout(tick, modelState.status === "loading" ? 700 : 450);
         }
       })
       .catch((err) => toast(err.message, "error"));
   };
   setTimeout(tick, 300);
+}
+
+function playgroundHeight() {
+  return Math.max(1, Math.round(window.innerHeight * 0.25));
+}
+
+function overlaysBlockPlayground() {
+  return (
+    lockBlocks() ||
+    settingsOpen() ||
+    editorOpen() ||
+    Boolean($("#brief")?.open) ||
+    Boolean(chartBusy)
+  );
+}
+
+function scrollRootAtTop(target) {
+  let el = target instanceof Element ? target : target?.parentElement;
+  while (el && el !== document.body && el !== document.documentElement) {
+    const style = getComputedStyle(el);
+    const canScroll =
+      (style.overflowY === "auto" || style.overflowY === "scroll" || style.overflowY === "overlay") &&
+      el.scrollHeight > el.clientHeight + 1;
+    if (canScroll && el.scrollTop > 0) return false;
+    el = el.parentElement;
+  }
+  return window.scrollY <= 0;
+}
+
+function playgroundSettledAtTop() {
+  if (window.scrollY > 0) return false;
+  const now = performance.now();
+  return now - lastNonTopScroll >= PLAYGROUND_TOP_MS && now - lastPlaygroundWheel >= PLAYGROUND_REST_MS;
+}
+
+function weighPlaygroundDelta(deltaUp, pull, height) {
+  const t = Math.min(1, Math.max(0, pull / height));
+  return deltaUp * PLAYGROUND_RESIST * (0.45 + 0.55 * (1 - t));
+}
+
+function playgroundWheelDelta(event) {
+  if (event.ctrlKey) return null;
+  if (event.type === "wheel") {
+    if (event.deltaMode === 1) return event.deltaY * 16;
+    if (event.deltaMode === 2) return event.deltaY * window.innerHeight;
+    return event.deltaY;
+  }
+  if (event.type === "touchmove") {
+    const touch = event.touches[0];
+    if (!touch) return null;
+    if (playgroundTouchY == null) {
+      playgroundTouchY = touch.clientY;
+      return 0;
+    }
+    const dy = playgroundTouchY - touch.clientY;
+    playgroundTouchY = touch.clientY;
+    return dy;
+  }
+  return null;
+}
+
+function textareaBlocksGesture(event, delta) {
+  const box = event.target.closest?.("#playground-text");
+  if (!box) return false;
+  if (delta < 0 && box.scrollTop > 0) return true;
+  if (delta > 0 && box.scrollTop + box.clientHeight < box.scrollHeight - 1) return true;
+  return false;
+}
+
+function paintPlayground() {
+  const panel = $("#playground");
+  const html = document.documentElement;
+  const height = playgroundHeight();
+  const shown = playgroundOpen && !playgroundDragging ? height : Math.max(0, Math.min(height, playgroundPull));
+  html.style.setProperty("--playground-shift", `${shown}px`);
+  if (panel) {
+    panel.classList.toggle("is-peek", shown > 1 && !playgroundOpen);
+    panel.classList.toggle("is-open", playgroundOpen);
+    panel.setAttribute("aria-hidden", playgroundOpen ? "false" : "true");
+  }
+  html.classList.toggle("is-playground", shown > 1 || playgroundOpen);
+  html.classList.toggle("is-playground-open", playgroundOpen);
+  html.classList.toggle("is-playground-pull", playgroundDragging);
+}
+
+function settlePlayground() {
+  playgroundDragging = false;
+  const height = playgroundHeight();
+  if (playgroundOpen) {
+    if (playgroundPull < height * 0.4) closePlayground();
+    else {
+      playgroundPull = height;
+      paintPlayground();
+    }
+    return;
+  }
+  if (playgroundPull >= height * PLAYGROUND_LOCK) openPlayground();
+  else {
+    playgroundPull = 0;
+    paintPlayground();
+  }
+}
+
+function schedulePlaygroundSettle() {
+  clearTimeout(playgroundSettle);
+  playgroundSettle = setTimeout(settlePlayground, 220);
+}
+
+function consumePlaygroundScroll(event) {
+  if (overlaysBlockPlayground()) {
+    if (playgroundOpen || playgroundPull > 0) closePlayground();
+    return false;
+  }
+  if (window.scrollY > 0) lastNonTopScroll = performance.now();
+  const settled = playgroundSettledAtTop();
+  const pulling = playgroundOpen || playgroundPull > 0;
+  const delta = playgroundWheelDelta(event);
+  if (delta == null) return false;
+  lastPlaygroundWheel = performance.now();
+  if (textareaBlocksGesture(event, delta)) return false;
+  if (playgroundOpen) {
+    const overPanel = Boolean(event.target.closest?.("#playground"));
+    if (delta <= 0 || !overPanel) return false;
+    event.preventDefault();
+    playgroundDragging = true;
+    const height = playgroundHeight();
+    if (!playgroundPull) playgroundPull = height;
+    playgroundPull = Math.max(0, playgroundPull - weighPlaygroundDelta(delta, playgroundPull, height));
+    paintPlayground();
+    schedulePlaygroundSettle();
+    return true;
+  }
+  if (delta >= 0) {
+    if (playgroundPull > 0) {
+      event.preventDefault();
+      playgroundDragging = true;
+      const height = playgroundHeight();
+      playgroundPull = Math.max(0, playgroundPull - weighPlaygroundDelta(delta, playgroundPull, height));
+      paintPlayground();
+      schedulePlaygroundSettle();
+      return true;
+    }
+    return false;
+  }
+  if (!scrollRootAtTop(event.target)) return false;
+  if (!pulling && !settled) return false;
+  event.preventDefault();
+  playgroundDragging = true;
+  const height = playgroundHeight();
+  playgroundPull = Math.min(height, playgroundPull + weighPlaygroundDelta(-delta, playgroundPull, height));
+  paintPlayground();
+  schedulePlaygroundSettle();
+  return true;
+}
+
+function openPlayground() {
+  if (playgroundOpen || overlaysBlockPlayground()) return;
+  playgroundOpen = true;
+  playgroundDragging = false;
+  playgroundPull = playgroundHeight();
+  paintPlayground();
+  $("#playground-text")?.focus({ preventScroll: true });
+  syncDictationListen();
+}
+
+function closePlayground(opts) {
+  const keepListen = Boolean(opts && opts.keepListen);
+  playgroundOpen = false;
+  playgroundDragging = false;
+  playgroundPull = 0;
+  clearTimeout(playgroundSettle);
+  paintPlayground();
+  if (!keepListen && !lockBlocks()) syncDictationListen();
+}
+
+function clearModelTest() {
+  lastModelTest = "";
+  ["#model-test", "#playground-text"].forEach((sel) => {
+    const box = $(sel);
+    if (box) box.value = "";
+  });
+  api("/api/model/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ clear: true, listen: dictationListenOpen() }),
+    _skipLock: true,
+  })
+    .then(applyModelTest)
+    .catch((err) => toast(err.message, "error"));
+}
+
+function bindPlayground() {
+  lastNonTopScroll = window.scrollY > 0 ? performance.now() : 0;
+  paintPlayground();
+  window.addEventListener(
+    "scroll",
+    () => {
+      if (window.scrollY > 0) lastNonTopScroll = performance.now();
+    },
+    { passive: true }
+  );
+  document.addEventListener(
+    "touchstart",
+    (event) => {
+      if (event.touches[0]) playgroundTouchY = event.touches[0].clientY;
+    },
+    { passive: true }
+  );
+  document.addEventListener("touchend", () => {
+    playgroundTouchY = null;
+  }, { passive: true });
+  document.addEventListener("touchcancel", () => {
+    playgroundTouchY = null;
+  }, { passive: true });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !playgroundOpen) return;
+    if (settingsOpen() || editorOpen() || $("#brief")?.open) return;
+    event.preventDefault();
+    closePlayground();
+  });
+  $("#playground-close")?.addEventListener("click", () => closePlayground());
+  $("#playground-clear")?.addEventListener("click", () => clearModelTest());
 }
 
 async function saveModel(id) {
@@ -3808,6 +5581,93 @@ async function saveAccount(patch) {
   renderAccount();
 }
 
+function findOpen() {
+  return Boolean(document.querySelector(".mast-tools")?.classList.contains("is-open"));
+}
+
+function openFind() {
+  const tools = document.querySelector(".mast-tools");
+  const btn = $("#open-find");
+  const box = $("#find-query");
+  if (!tools || !btn || !box) return;
+  tools.classList.add("is-open");
+  btn.classList.add("is-open");
+  btn.setAttribute("aria-expanded", "true");
+  box.focus();
+  peekFindSources().catch(() => {});
+}
+
+function closeFind() {
+  const tools = document.querySelector(".mast-tools");
+  const btn = $("#open-find");
+  tools?.classList.remove("is-open");
+  btn?.classList.remove("is-open");
+  btn?.setAttribute("aria-expanded", "false");
+}
+
+async function peekFindSources() {
+  try {
+    library = await api("/api/library");
+  } catch {
+    /* keep current library */
+  }
+  try {
+    const data = await api(`/api/scout?${clientQuery()}`);
+    if (data && Array.isArray(data.runs)) {
+      scoutState = { current: data.current || scoutState.current, runs: data.runs };
+    }
+  } catch {
+    /* keep current briefs */
+  }
+  if (!scribeBusy) {
+    try {
+      const data = await api(`/api/scribe?${clientQuery()}`);
+      rememberScribeGone(data.gone || []);
+      applyScribeItems(data.items || []);
+    } catch {
+      /* keep current vocanotes */
+    }
+  }
+  applyFind();
+}
+
+function bindFind() {
+  $("#open-find")?.addEventListener("click", () => {
+    if (findOpen()) {
+      closeFind();
+      return;
+    }
+    openFind();
+  });
+  $("#find-query")?.addEventListener("input", (event) => {
+    findQuery = event.target.value;
+    applyFind();
+  });
+  $("#find-query")?.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (findNeedle()) {
+      findQuery = "";
+      event.target.value = "";
+      applyFind();
+    }
+    closeFind();
+  });
+  $("#find-query")?.addEventListener("blur", (event) => {
+    if (event.relatedTarget && event.relatedTarget.closest(".mast-tools")) return;
+    if (!findNeedle()) closeFind();
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!findOpen()) return;
+    if (event.target.closest(".mast-tools") || event.target.closest("[data-find-view]")) return;
+    closeFind();
+  });
+  document.addEventListener("click", (event) => {
+    const hit = event.target.closest("[data-find-view]");
+    if (!hit) return;
+    showView(hit.dataset.findView);
+  });
+}
+
 function bindSettings() {
   $("#open-settings").addEventListener("click", () => {
     syncSaveGen += 1;
@@ -3817,6 +5677,7 @@ function bindSettings() {
     syncWizard = "";
     renderPersonalization();
     renderAccount();
+    scoutKeyEditing = false;
     renderModel();
     refreshModel()
       .then(() => {
@@ -3826,17 +5687,18 @@ function bindSettings() {
     api("/api/sync/status")
       .then((data) => renderSync(data))
       .catch((err) => toast(err.message));
+    closePlayground({ keepListen: true });
     $("#settings").showModal();
     $("#open-settings").classList.add("is-open");
     setPageFreeze(true);
     if ($("#open-settings").classList.contains("has-notice")) showSettings("sync");
-    else if (modelPaneOpen()) syncModelTest(true);
+    else syncDictationListen();
   });
   $("#settings-close").addEventListener("click", () => $("#settings").close());
   $("#settings").addEventListener("close", () => {
     $("#open-settings").classList.remove("is-open");
     setPageFreeze(false);
-    syncModelTest(false);
+    syncDictationListen();
     const el = $("#toast");
     if (el?.classList.contains("is-on")) placeToast(el);
     refresh().catch((err) => toast(err.message));
@@ -3877,6 +5739,173 @@ function bindSettings() {
     if (btn.dataset.model === modelState.model && modelState.status !== "error") return;
     saveModel(btn.dataset.model).catch((err) => toast(err.message, "error"));
   });
+  $("#scout-providers")?.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-scout-provider]");
+    if (!btn) return;
+    const provider = btn.dataset.scoutProvider;
+    if (provider === scoutSettings().provider) return;
+    scoutKeyEditing = false;
+    const key = $("#scout-key");
+    if (key) key.value = "";
+    saveScoutSettings({ provider }).catch((err) => toast(err.message));
+  });
+  $("#scout-model")?.addEventListener("change", (event) => {
+    const value = event.target.value.trim();
+    if (!value) return;
+    saveScoutSettings({ model: value }).catch((err) => toast(err.message));
+  });
+  $("#scout-base-url")?.addEventListener("change", (event) => {
+    saveScoutSettings({ base_url: event.target.value }).catch((err) => toast(err.message));
+  });
+  $("#scout-bedrock-region")?.addEventListener("change", (event) => {
+    saveScoutSettings({ bedrock_region: event.target.value }).catch((err) => toast(err.message));
+  });
+  $("#save-scout-key")?.addEventListener("click", () => {
+    saveScoutKey().catch((err) => toast(err.message, "error"));
+  });
+  $("#change-scout-key")?.addEventListener("click", () => {
+    scoutKeyEditing = true;
+    renderScoutSettings();
+    $("#scout-key")?.focus();
+  });
+  $("#cancel-scout-key")?.addEventListener("click", () => {
+    scoutKeyEditing = false;
+    const box = $("#scout-key");
+    if (box) box.value = "";
+    renderScoutSettings();
+  });
+  $("#pane-scout")?.addEventListener("click", (event) => {
+    const tool = event.target.closest("[data-scout-tool]");
+    if (tool) {
+      event.preventDefault();
+      toggleScoutTool(tool.dataset.scoutTool);
+      return;
+    }
+    const auto = event.target.closest("[data-scout-auto]");
+    if (auto) {
+      event.preventDefault();
+      toggleScoutAuto(auto.dataset.scoutAuto);
+      return;
+    }
+    const mcpAuto = event.target.closest("[data-mcp-auto]");
+    if (mcpAuto) {
+      event.preventDefault();
+      toggleMcpAuto(mcpAuto.dataset.mcpAuto);
+      return;
+    }
+    const remove = event.target.closest("[data-remove-mcp]");
+    if (remove) {
+      event.preventDefault();
+      removeMcp(remove.dataset.removeMcp);
+      return;
+    }
+    const transport = event.target.closest("[data-mcp-transport]");
+    if (transport) {
+      mcpTransport = transport.dataset.mcpTransport || "stdio";
+      renderScoutSettings();
+    }
+  });
+  $("#scout-max-tokens")?.addEventListener("change", (event) => {
+    saveScoutSettings({ max_tokens: Number(event.target.value) }).catch((err) => toast(err.message));
+  });
+  $("#scout-duration")?.addEventListener("change", (event) => {
+    saveScoutSettings({ duration_sec: Number(event.target.value) }).catch((err) => toast(err.message));
+  });
+  $("#scout-context")?.addEventListener("change", (event) => {
+    saveScoutSettings({ context: event.target.value }).catch((err) => toast(err.message));
+  });
+  $("#add-mcp")?.addEventListener("click", () => {
+    addMcp().catch((err) => toast(err.message, "error"));
+  });
+  $("#cancel-scout")?.addEventListener("click", () => {
+    api("/api/scout/cancel", { method: "POST" })
+      .then((data) => {
+        scoutState.current = data.current || null;
+        renderScout();
+        if (openBriefId) renderBriefDialog();
+      })
+      .catch((err) => toast(err.message));
+  });
+  $("#select-briefs")?.addEventListener("click", () => {
+    toggleSelectAll(
+      listedBriefIds().filter((id) => {
+        const run = briefById(id);
+        return run && briefMatches(run);
+      }),
+      briefPicks
+    );
+    renderScout();
+  });
+  $("#delete-briefs")?.addEventListener("click", () => {
+    deleteBriefs([...briefPicks]).catch((err) => toast(err.message, "error"));
+  });
+  $("#scout-list")?.addEventListener("click", (event) => {
+    if (event.target.closest("[data-brief-pick]")) return;
+    const open = event.target.closest("[data-brief-open]");
+    if (open) openBrief(open.dataset.briefOpen).catch((err) => toast(err.message, "error"));
+  });
+  $("#scout-list")?.addEventListener("change", (event) => {
+    const pick = event.target.closest("[data-brief-pick]");
+    if (!pick) return;
+    const id = pick.dataset.briefPick;
+    if (pick.checked) briefPicks.add(id);
+    else briefPicks.delete(id);
+    renderScout();
+  });
+  $("#brief-close")?.addEventListener("click", () => closeBrief());
+  $("#brief-insert")?.addEventListener("click", () => {
+    insertOpenBrief().catch((err) => toast(err.message, "error"));
+  });
+  $("#brief-cancel")?.addEventListener("click", () => {
+    api("/api/scout/cancel", { method: "POST" })
+      .then((data) => {
+        scoutState.current = data.current || null;
+        renderScout();
+        if (openBriefId) renderBriefDialog();
+      })
+      .catch((err) => toast(err.message));
+  });
+  $("#brief-delete")?.addEventListener("click", () => {
+    if (openBriefId) deleteBriefs([openBriefId]).catch((err) => toast(err.message, "error"));
+  });
+  $("#brief-title")?.addEventListener("change", () => {
+    saveBriefTitle().catch((err) => toast(err.message, "error"));
+  });
+  $("#brief")?.addEventListener("close", () => {
+    const was = openBriefId;
+    openBriefId = "";
+    if (was) setBriefContinue("").catch(() => {});
+  });
+  $("#brief")?.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-scout-confirm]");
+    if (!btn) return;
+    api("/api/scout/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ok: btn.dataset.scoutConfirm === "1" }),
+    })
+      .then((data) => {
+        scoutState.current = data.current || null;
+        renderScout();
+        if (openBriefId) renderBriefDialog();
+      })
+      .catch((err) => toast(err.message));
+  });
+  $("#scout-live")?.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-scout-confirm]");
+    if (!btn) return;
+    api("/api/scout/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ok: btn.dataset.scoutConfirm === "1" }),
+    })
+      .then((data) => {
+        scoutState.current = data.current || null;
+        renderScout();
+        if (openBriefId) renderBriefDialog();
+      })
+      .catch((err) => toast(err.message));
+  });
   $("#add-custom-model")?.addEventListener("click", () => {
     modelAddOpen = !modelAddOpen;
     renderModelAddForm();
@@ -3910,18 +5939,7 @@ function bindSettings() {
       renderModelAddForm();
     }
   });
-  $("#clear-model-test")?.addEventListener("click", () => {
-    lastModelTest = "";
-    const box = $("#model-test");
-    if (box) box.value = "";
-    api("/api/model/test", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ clear: true, listen: true }),
-    })
-      .then(applyModelTest)
-      .catch((err) => toast(err.message, "error"));
-  });
+  $("#clear-model-test")?.addEventListener("click", () => clearModelTest());
   $("#private-mode")?.addEventListener("click", () => {
     saveAccount({ private_mode: !settings.private_mode }).catch((err) => toast(err.message, "error"));
   });
@@ -3935,17 +5953,11 @@ function bindSettings() {
       return;
     }
     if (settings.lock?.enabled) {
-      api("/api/lock/disable", { method: "POST" })
-        .then((data) => {
-          lockDrafting = false;
-          lockChangingPin = false;
-          applyLock(data);
-          toast("Lock is off");
-        })
-        .catch((err) => {
-          sw.setAttribute("aria-pressed", "true");
-          toast(err.message, "error");
-        });
+      promptLock("off").then(() => {
+        lockDrafting = false;
+        lockChangingPin = false;
+        renderLockFields();
+      });
       return;
     }
     lockDrafting = false;
@@ -3970,7 +5982,7 @@ function bindSettings() {
       toast("PINs do not match.", "error");
       return;
     }
-    const body = { pin, timeout_sec: Number($("#lock-timeout")?.value || 900) };
+    const body = { pin, timeout_sec: finiteNumber($("#lock-timeout")?.value, 900) };
     if (changing) body.current = $("#lock-pin-old")?.value || "";
     api("/api/lock/setup", {
       method: "POST",

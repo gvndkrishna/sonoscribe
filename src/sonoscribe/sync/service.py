@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sonoscribe.catalog import load_library, save_library
+from sonoscribe.catalog import load_library, save_library, union_vocanote_gone
 from sonoscribe.device import is_alias_of, iso_now, this_device
 from sonoscribe.profile import clean_username, username_error, usernames_match
 from sonoscribe.settings import (
@@ -309,6 +309,7 @@ def push() -> dict[str, Any]:
             "commands": outgoing_library(merged["commands"], this_id),
             "routines": outgoing_library(merged["routines"], this_id),
             "variables": outgoing_library(merged.get("variables") or [], this_id),
+            "vocanotes": outgoing_library(merged.get("vocanotes") or [], this_id),
         }
         box = encrypt(public_pem, json.dumps(upload_plain).encode("utf-8"))
         manifest = {
@@ -475,6 +476,8 @@ def _local_plain(settings: dict[str, Any]) -> dict[str, Any]:
     payload["commands"] = list(library.get("commands") or [])
     payload["routines"] = list(library.get("routines") or [])
     payload["variables"] = list(library.get("variables") or [])
+    payload["vocanotes"] = list(library.get("vocanotes") or [])
+    payload["vocanote_gone"] = list(library.get("vocanote_gone") or [])
     if what.get("stats"):
         store = StatsStore()
         stats = store.remote_devices()
@@ -498,11 +501,21 @@ def _commit_plain(merged: dict[str, Any], what: dict[str, bool]) -> bool:
     if patch:
         update_settings(patch)
     if what.get("library", True):
+        current = load_library()
+        gone = union_vocanote_gone(current.get("vocanote_gone"), merged.get("vocanote_gone"))
+        gone_ids = {item["id"] for item in gone}
+        notes = [
+            item
+            for item in (merged.get("vocanotes") or [])
+            if isinstance(item, dict) and item.get("id") not in gone_ids
+        ]
         save_library(
             {
                 "commands": merged.get("commands") or [],
                 "routines": merged.get("routines") or [],
                 "variables": merged.get("variables") or [],
+                "vocanotes": notes,
+                "vocanote_gone": gone,
             }
         )
         changed = True

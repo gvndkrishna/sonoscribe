@@ -1,6 +1,6 @@
 [project]
 name = "sonoscribe"
-version = "1.0.0"
+version = "2.0.0"
 description = "Hold Fn to dictate with on-device Whisper. Hold Cmd with Fn for commands."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -17,6 +17,7 @@ dependencies = [
     "truststore>=0.10.0",
     "cryptography>=44.0.0",
     "pyobjc-framework-Security>=10.0",
+    "boto3>=1.35.0",
 ]
 
 [project.optional-dependencies]

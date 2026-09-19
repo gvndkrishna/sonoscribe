@@ -3,31 +3,38 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 import traceback
+from typing import Any
 
+from sonoscribe.runtime import configure_tls
 from sonoscribe.transcriber import MODELS, friendly_load_error, resolve_model_path
 
 
-def configure_tls() -> None:
-    """Trust the macOS Keychain so corporate proxies (Zscaler) verify.
+def parse_job(line: str) -> tuple[str, str]:
+    text = str(line or "").strip()
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return text, "dictate"
+        if isinstance(data, dict):
+            path = str(data.get("path") or "")
+            mode = str(data.get("mode") or "dictate")
+            return path, mode
+    return text, "dictate"
 
-    Do not point OpenSSL at Mozilla certifi: that bundle has no Zscaler CA.
-    Honor SSL_CERT_FILE / REQUESTS_CA_BUNDLE if the user already set them.
-    """
-    if os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE"):
-        return
-    try:
-        import truststore
 
-        truststore.inject_into_ssl()
-    except Exception:
-        return
+def transcribe_options(_mode: str) -> dict[str, Any]:
+    return {
+        "language": "en",
+        "word_timestamps": True,
+        "condition_on_previous_text": False,
+    }
 
 
 def run_worker(model_key: str | None = None, model_path: str | None = None) -> int:
-    path = str(model_path or "").strip() or None
+    source = str(model_path or "").strip() or None
     key = str(model_key or "").strip()
     try:
         print("WORKER_LOADING", flush=True)
@@ -36,8 +43,8 @@ def run_worker(model_key: str | None = None, model_path: str | None = None) -> i
         import mlx_whisper
         from mlx_whisper.load_models import load_model
 
-        if path:
-            model_dir = path
+        if source:
+            model_dir = source
         else:
             repo = MODELS[key or "large-v3-turbo"]
             model_dir = resolve_model_path(repo)
@@ -55,12 +62,15 @@ def run_worker(model_key: str | None = None, model_path: str | None = None) -> i
         if not line or line == "QUIT":
             break
         try:
-            samples = np.load(line)
+            audio_path, mode = parse_job(line)
+            if not audio_path:
+                print(json.dumps({"error": "No audio path."}), flush=True)
+                continue
+            samples = np.load(audio_path)
             result = mlx_whisper.transcribe(
                 np.ascontiguousarray(samples, dtype=np.float32),
                 path_or_hf_repo=model_dir,
-                language="en",
-                word_timestamps=True,
+                **transcribe_options(mode),
             )
             text = result.get("text", "") if isinstance(result, dict) else str(result)
             words = []

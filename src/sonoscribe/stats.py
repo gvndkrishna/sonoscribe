@@ -11,7 +11,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _ENV_STATS = "SONOSCRIBE_STATS"
-_MAX_ACTIVITY = 200
+_MAX_ACTIVITY = 2000
 _COMMAND_TYPES = ("keyboard", "website", "app", "file", "system", "script", "text")
 USAGE_WEEKS = 16
 
@@ -27,8 +27,10 @@ def empty_stats() -> dict[str, Any]:
     return {
         "dictation_words": 0,
         "dictation_seconds": 0.0,
+        "dictation_runs": 0,
         "command_runs": 0,
         "routine_runs": 0,
+        "scout_runs": 0,
         "activity": [],
         "updated_at": None,
     }
@@ -38,18 +40,35 @@ def clean_stats_blob(raw: Any) -> dict[str, Any]:
     blob = empty_stats()
     if not isinstance(raw, dict):
         return blob
-    for key in ("dictation_words", "command_runs", "routine_runs"):
+    for key in ("dictation_words", "dictation_runs", "command_runs", "routine_runs"):
         try:
             blob[key] = int(raw.get(key) or 0)
         except (TypeError, ValueError):
             pass
+    try:
+        if "scout_runs" in raw:
+            blob["scout_runs"] = int(raw.get("scout_runs") or 0)
+        else:
+            blob["scout_runs"] = int(raw.get("task_runs") or 0)
+    except (TypeError, ValueError):
+        pass
     try:
         blob["dictation_seconds"] = float(raw.get("dictation_seconds") or 0)
     except (TypeError, ValueError):
         pass
     activity = raw.get("activity")
     if isinstance(activity, list):
-        blob["activity"] = [item for item in activity if isinstance(item, dict)][:_MAX_ACTIVITY]
+        rows: list[dict[str, Any]] = []
+        for item in activity:
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            if str(row.get("kind") or "") == "task":
+                row["kind"] = "scout"
+            rows.append(row)
+        blob["activity"] = rows[:_MAX_ACTIVITY]
+    if "dictation_runs" not in raw:
+        blob["dictation_runs"] = sum(1 for item in blob["activity"] if item.get("kind") == "dictate")
     stamp = raw.get("updated_at")
     blob["updated_at"] = str(stamp) if stamp else None
     return blob
@@ -82,8 +101,10 @@ def merge_stats_blobs(left: Any, right: Any) -> dict[str, Any]:
     return {
         "dictation_words": max(int(first["dictation_words"]), int(second["dictation_words"])),
         "dictation_seconds": max(float(first["dictation_seconds"]), float(second["dictation_seconds"])),
+        "dictation_runs": max(int(first.get("dictation_runs") or 0), int(second.get("dictation_runs") or 0)),
         "command_runs": max(int(first["command_runs"]), int(second["command_runs"])),
         "routine_runs": max(int(first["routine_runs"]), int(second["routine_runs"])),
+        "scout_runs": max(int(first.get("scout_runs") or 0), int(second.get("scout_runs") or 0)),
         "activity": activity[:_MAX_ACTIVITY],
         "updated_at": updated,
     }
@@ -112,21 +133,36 @@ def resolve_zone(name: str | None):
 
 def public_stats(stats: dict[str, Any], tz=None, model_labels: dict[str, str] | None = None) -> dict[str, Any]:
     activity = list(stats.get("activity") or [])[:_MAX_ACTIVITY]
+    command_runs = int(stats.get("command_runs") or 0)
+    routine_runs = int(stats.get("routine_runs") or 0)
+    scout_runs = int(stats.get("scout_runs") or 0)
+    dictation_runs = int(stats.get("dictation_runs") or 0)
+    charts = chart_series(activity, tz=tz, model_labels=model_labels)
+    charts["by_kind"] = {
+        "dictate": dictation_runs,
+        "command": command_runs,
+        "routine": routine_runs,
+        "scout": scout_runs,
+    }
+    charts["versus"] = {"dictate": dictation_runs, "command": command_runs}
+    charts["versus_routines"] = {"command": command_runs, "routine": routine_runs}
     return {
         "dictation_words": int(stats.get("dictation_words") or 0),
         "dictation_seconds": round(float(stats.get("dictation_seconds") or 0), 2),
-        "command_runs": int(stats.get("command_runs") or 0),
-        "routine_runs": int(stats.get("routine_runs") or 0),
+        "dictation_runs": dictation_runs,
+        "command_runs": command_runs,
+        "routine_runs": routine_runs,
+        "scout_runs": scout_runs,
         "average_wpm": round(average_wpm(stats), 1),
         "activity": activity,
-        "charts": chart_series(activity, tz=tz, model_labels=model_labels),
+        "charts": charts,
     }
 
 
 def chart_series(activity: list[Any], tz=None, model_labels: dict[str, str] | None = None) -> dict[str, Any]:
     zone = tz or datetime.now().astimezone().tzinfo
     labels = model_labels or {}
-    by_kind = {"dictate": 0, "command": 0, "routine": 0}
+    by_kind = {"dictate": 0, "command": 0, "routine": 0, "scout": 0}
     top: dict[str, int] = {}
     top_routines: dict[str, int] = {}
     by_model_counts: dict[str, int] = {}
@@ -134,12 +170,13 @@ def chart_series(activity: list[Any], tz=None, model_labels: dict[str, str] | No
     hourly = [0] * 24
     today = datetime.now(zone).date()
     days = [(today - timedelta(days=offset)).isoformat() for offset in range(13, -1, -1)]
-    daily = {day: {"dictate": 0, "command": 0, "routine": 0} for day in days}
+    daily = {day: {"dictate": 0, "command": 0, "routine": 0, "scout": 0} for day in days}
     for item in activity:
         if not isinstance(item, dict):
             continue
         kind = str(item.get("kind") or "")
-        if kind in by_kind:
+        follow_up = bool(item.get("follow_up"))
+        if kind in by_kind and not follow_up:
             by_kind[kind] += 1
         label = str(item.get("label") or "").strip()
         if kind == "command" and label:
@@ -165,7 +202,7 @@ def chart_series(activity: list[Any], tz=None, model_labels: dict[str, str] | No
         local = parsed.astimezone(zone)
         hourly[local.hour] += 1
         day = local.date().isoformat()
-        if day in daily and kind in daily[day]:
+        if day in daily and kind in daily[day] and not follow_up:
             daily[day][kind] += 1
     top_commands = [
         {"label": label, "count": count}
@@ -213,7 +250,60 @@ def chart_series(activity: list[Any], tz=None, model_labels: dict[str, str] | No
         "top_commands": top_commands,
         "top_routines": routine_leaders,
         "usage": _usage_series(activity, zone),
+        "scout_tokens": _scout_token_series(activity, labels),
+        "scout_cost": _scout_cost_series(activity, zone, days),
     }
+
+
+def _scout_token_series(activity: list[Any], labels: dict[str, str]) -> list[dict[str, Any]]:
+    buckets: dict[str, dict[str, int]] = {}
+    for item in activity:
+        if not isinstance(item, dict) or str(item.get("kind") or "") != "scout":
+            continue
+        model = str(item.get("model") or "").strip() or "model"
+        bucket = buckets.setdefault(model, {"input": 0, "output": 0})
+        try:
+            bucket["input"] += int(item.get("input_tokens") or 0)
+        except (TypeError, ValueError):
+            pass
+        try:
+            bucket["output"] += int(item.get("output_tokens") or 0)
+        except (TypeError, ValueError):
+            pass
+    rows = []
+    for key, bucket in buckets.items():
+        total = bucket["input"] + bucket["output"]
+        if total <= 0:
+            continue
+        rows.append(
+            {
+                "id": key,
+                "label": labels.get(key, key),
+                "input": bucket["input"],
+                "output": bucket["output"],
+                "count": total,
+            }
+        )
+    rows.sort(key=lambda item: (-item["count"], item["label"]))
+    return rows[:8]
+
+
+def _scout_cost_series(activity: list[Any], zone, days: list[str]) -> list[dict[str, Any]]:
+    daily = {day: 0.0 for day in days}
+    for item in activity:
+        if not isinstance(item, dict) or str(item.get("kind") or "") != "scout":
+            continue
+        parsed = _parse_activity_time(item.get("at"))
+        if parsed is None:
+            continue
+        day = parsed.astimezone(zone).date().isoformat()
+        if day not in daily:
+            continue
+        try:
+            daily[day] += float(item.get("cost") or 0)
+        except (TypeError, ValueError):
+            pass
+    return [{"day": day, "cost": round(daily[day], 6)} for day in days]
 
 
 def _is_model_use(item: dict[str, Any]) -> bool:
@@ -348,6 +438,7 @@ class StatsStore:
         self._update(
             dictation_words=words,
             dictation_seconds=max(0.0, seconds),
+            dictation_runs=1,
             kind="dictate",
             label=f"{words} word" if words == 1 else f"{words} words",
             model=model,
@@ -361,6 +452,28 @@ class StatsStore:
     def record_routine(self, label: str, model: str = "") -> None:
         self._update(routine_runs=1, kind="routine", label=label, model=model)
 
+    def record_scout(
+        self,
+        label: str,
+        model: str = "",
+        provider: str = "",
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cost: float = 0.0,
+        count: bool = True,
+    ) -> None:
+        self._update(
+            scout_runs=1 if count else 0,
+            kind="scout",
+            label=label,
+            model=model,
+            provider=provider,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost=cost,
+            follow_up=not count,
+        )
+
     def _update(
         self,
         *,
@@ -368,12 +481,19 @@ class StatsStore:
         label: str,
         dictation_words: int = 0,
         dictation_seconds: float = 0.0,
+        dictation_runs: int = 0,
         command_runs: int = 0,
         routine_runs: int = 0,
+        scout_runs: int = 0,
         command_type: str = "",
         model: str = "",
+        provider: str = "",
         words: int = 0,
         seconds: float = 0.0,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cost: float = 0.0,
+        follow_up: bool = False,
     ) -> None:
         from sonoscribe.settings import load_settings
 
@@ -390,6 +510,24 @@ class StatsStore:
         cleaned_model = str(model or "").strip()
         if cleaned_model:
             event["model"] = cleaned_model
+        cleaned_provider = str(provider or "").strip()
+        if cleaned_provider:
+            event["provider"] = cleaned_provider
+        if kind == "scout":
+            inn = max(0, int(input_tokens or 0))
+            out = max(0, int(output_tokens or 0))
+            if inn:
+                event["input_tokens"] = inn
+            if out:
+                event["output_tokens"] = out
+            try:
+                spend = float(cost or 0)
+            except (TypeError, ValueError):
+                spend = 0.0
+            if spend:
+                event["cost"] = round(spend, 6)
+            if follow_up:
+                event["follow_up"] = True
         if kind == "dictate":
             if words:
                 event["words"] = int(words)
@@ -399,8 +537,10 @@ class StatsStore:
             self._reload_locked()
             self._data["dictation_words"] = int(self._data["dictation_words"]) + dictation_words
             self._data["dictation_seconds"] = float(self._data["dictation_seconds"]) + dictation_seconds
+            self._data["dictation_runs"] = int(self._data.get("dictation_runs") or 0) + dictation_runs
             self._data["command_runs"] = int(self._data["command_runs"]) + command_runs
             self._data["routine_runs"] = int(self._data["routine_runs"]) + routine_runs
+            self._data["scout_runs"] = int(self._data.get("scout_runs") or 0) + scout_runs
             activity = list(self._data.get("activity") or [])
             activity.insert(0, event)
             self._data["activity"] = activity[:_MAX_ACTIVITY]

@@ -15,6 +15,7 @@ from sonoscribe.catalog import (
     normalize_phrase,
     remap_device_id,
     save_library,
+    split_scout_ref,
     validate_library,
 )
 
@@ -64,6 +65,89 @@ def test_routine_prefix() -> None:
     assert office.kind == "routine"
     assert match_utterance("routine missing", library).kind == "unknown"
     assert match_utterance("enter", library).kind == "command"
+    assert match_utterance("task work", library).kind == "routine"
+    assert match_utterance("scout work", library).kind == "routine"
+
+
+def test_scout_prefix_routes_rest() -> None:
+    library = empty_library()
+    assert match_utterance("scout", library).kind == "scout_incomplete"
+    assert match_utterance("task", library).kind == "scout_incomplete"
+    hit = match_utterance("scout what is the weather in Chicago", library)
+    assert hit.kind == "scout"
+    assert hit.bindings["prompt"] == "what is the weather in chicago"
+    assert "ref" not in hit.bindings
+    alias = match_utterance("task what is the weather in Chicago", library)
+    assert alias.kind == "scout"
+    assert alias.bindings["prompt"] == "what is the weather in chicago"
+    assert match_utterance("enter", library).kind == "command"
+    assert match_utterance("ask what is the weather", library).kind == "unknown"
+    assert match_utterance("what is the weather", library).kind == "unknown"
+    assert match_utterance("talk open notes", library).kind == "unknown"
+    assert match_utterance("shout weather", library).kind == "unknown"
+    assert match_utterance("scott weather", library).kind == "unknown"
+    assert match_utterance("scout enter", library).kind == "command"
+    assert match_utterance("task enter", library).kind == "command"
+
+
+def test_scout_number_refs() -> None:
+    library = empty_library()
+    zero = match_utterance("scout 0", library)
+    assert zero.bindings["ref"] == "0"
+    assert zero.bindings["prompt"] == ""
+    minus = match_utterance("scout minus one", library)
+    assert minus.bindings["ref"] == "-1"
+    typed = match_utterance("scout -1", library)
+    assert typed.bindings["ref"] == "-1"
+    sku = match_utterance("scout 01 make it shorter", library)
+    assert sku.bindings["ref"] == "1"
+    assert sku.bindings["prompt"] == "make it shorter"
+    named = match_utterance("scout sc 2", library)
+    assert named.bindings["ref"] == "2"
+    legacy = match_utterance("scout tk 2", library)
+    assert legacy.bindings["ref"] == "2"
+    tagged = match_utterance("scout sc–01", library)
+    assert tagged.bindings["ref"] == "1"
+    prose = match_utterance("scout one more thing", library)
+    assert "ref" not in prose.bindings
+    assert prose.bindings["prompt"] == "one more thing"
+    assert split_scout_ref(["minus", "two", "again"]) == (-2, ["again"])
+
+
+def test_phrase_cannot_start_with_scout() -> None:
+    with pytest.raises(LibraryError):
+        validate_library(
+            {
+                "commands": [
+                    {
+                        "id": "bad",
+                        "type": "keyboard",
+                        "name": "Bad",
+                        "phrases": ["scout boom"],
+                        "action": "enter",
+                    }
+                ],
+                "routines": [],
+            }
+        )
+
+
+def test_phrase_cannot_start_with_task() -> None:
+    with pytest.raises(LibraryError):
+        validate_library(
+            {
+                "commands": [
+                    {
+                        "id": "bad",
+                        "type": "keyboard",
+                        "name": "Bad",
+                        "phrases": ["task boom"],
+                        "action": "enter",
+                    }
+                ],
+                "routines": [],
+            }
+        )
 
 
 def test_phrase_cannot_start_with_routine() -> None:
@@ -604,6 +688,8 @@ def test_remap_device_id_rewrites_assignments() -> None:
 def test_empty_library_has_variables() -> None:
     library = empty_library()
     assert library["variables"] == []
+    assert library["vocanotes"] == []
+    assert library["vocanote_gone"] == []
 
 
 def test_phrase_cannot_start_with_slot() -> None:
@@ -666,6 +752,31 @@ def test_exact_phrase_beats_slot() -> None:
     other = match_utterance("open notes", library)
     assert other.command["id"] == "app-any"
     assert other.bindings["1"] == "notes"
+    prefixed = match_utterance("task open notes", library)
+    assert prefixed.kind == "command"
+    assert prefixed.command["id"] == "app-any"
+    assert prefixed.bindings["1"] == "notes"
+
+
+def test_open_star_does_not_eat_task_prompts() -> None:
+    library = validate_library(
+        {
+            "commands": [
+                {
+                    "id": "app-any",
+                    "type": "app",
+                    "name": "Open Apps",
+                    "phrases": ["open {*}"] ,
+                    "app": "{*}",
+                }
+            ]
+        }
+    )
+    assert match_utterance("open notes", library).kind == "command"
+    assert match_utterance("open the latest gta 6 trailer", library).kind == "unknown"
+    hit = match_utterance("scout open the latest gta 6 trailer", library)
+    assert hit.kind == "scout"
+    assert hit.bindings["prompt"] == "open the latest gta 6 trailer"
 
 
 def test_named_variable_text_command() -> None:

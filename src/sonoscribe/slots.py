@@ -8,6 +8,7 @@ from typing import Any
 from sonoscribe.actions import norm_token
 
 RESERVED_NAME = "routine"
+RESERVED_NAMES = frozenset({"routine", "scout", "task", "scribe"})
 _SLOT_TOKEN = re.compile(r"^\{([^{}]+)\}$")
 _SLOT_IN_TEXT = re.compile(r"\{([a-z0-9_*]+)\}")
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -22,7 +23,7 @@ def parse_slot(token: str) -> tuple[str, str] | None:
         return ("rest", "*")
     if name.isdigit() and int(name) >= 1:
         return ("capture", str(int(name)))
-    if _NAME_RE.fullmatch(name) and name != RESERVED_NAME:
+    if _NAME_RE.fullmatch(name) and name not in RESERVED_NAMES:
         return ("name", name)
     return None
 
@@ -215,4 +216,4 @@ def variable_map(library: dict[str, Any] | None) -> dict[str, str]:
 
 
 def valid_variable_name(name: str) -> bool:
-    return bool(_NAME_RE.fullmatch(name) and name != RESERVED_NAME)
+    return bool(_NAME_RE.fullmatch(name) and name not in RESERVED_NAMES)

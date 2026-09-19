@@ -1,8 +1,10 @@
 from sonoscribe.settings import (
+    SCOUT_DEFAULT_MODELS,
     empty_settings,
     load_settings,
     public_account,
     public_settings,
+    public_scout,
     save_settings,
     update_settings,
     validate_settings,
@@ -99,6 +101,8 @@ def test_lock_defaults_and_timeout_patch() -> None:
     assert validate_settings({"lock": {"enabled": True, "method": "touch"}})["lock"]["enabled"] is False
     saved = update_settings({"lock": {"timeout_sec": 1800}})
     assert saved["lock"]["timeout_sec"] == 1800
+    never = update_settings({"lock": {"timeout_sec": 0}})
+    assert never["lock"]["timeout_sec"] == 0
     assert saved["lock"]["enabled"] is False
 
 
@@ -203,6 +207,26 @@ def test_public_settings_omits_nothing_secret() -> None:
     assert public["username"] == ""
     assert public["device"]["id"]
     assert public["model"] == "large-v3-turbo"
+    assert public["scout"]["provider"] == "openai"
+    assert public["scout"]["has_key"] is False
+    assert public["scout"]["lock_ok"] is False
+    assert public["scout"]["tools"] == [
+        "search",
+        "weather",
+        "fetch",
+        "open_page",
+        "run_script",
+        "write_file",
+        "read_file",
+    ]
+    assert "capture_screen" not in public["scout"]["tools"]
+    assert public["scout"]["auto"] == ["search", "weather", "fetch", "open_page"]
+    assert any(item["id"] == "weather" for item in public["scout"]["tool_catalog"])
+    assert any(item["id"] == "capture_screen" for item in public["scout"]["tool_catalog"])
+    assert all(item["id"] != "insert" for item in public["scout"]["tool_catalog"])
+    assert "insert" not in public["scout"]["tools"]
+    assert "key" not in public["scout"]
+    assert public["scout"]["models"]["openai"] == SCOUT_DEFAULT_MODELS["openai"]
     assert public["devices"][0]["id"] == public["device"]["id"]
     assert [item["id"] for item in public["charts"]] == [
         "mix",
@@ -263,6 +287,8 @@ def test_charts_layout_defaults_and_hides_missing() -> None:
         "hourly",
         "library",
     ]
+    extra = validate_settings({"charts": [{"id": "task-tokens"}, {"id": "task-cost"}]})
+    assert [item["id"] for item in extra["charts"]] == ["scout-tokens", "scout-cost"]
     hidden = validate_settings({"charts": []})
     assert hidden["charts"] == []
     subset = validate_settings(
@@ -293,3 +319,173 @@ def test_charts_layout_defaults_and_hides_missing() -> None:
     assert board["charts"][0]["h"] == 24
     assert board["charts"][1]["h"] == 50
     assert board["charts"][1]["w"] == 6
+
+
+def test_task_models_survive_provider_switch() -> None:
+    custom = "us.anthropic.claude-sonnet-5-custom"
+    update_settings({"scout": {"provider": "bedrock", "model": custom, "bedrock_region": "us-west-2"}})
+    stored = load_settings()["scout"]
+    assert stored["provider"] == "bedrock"
+    assert stored["model"] == custom
+    assert stored["bedrock_model"] == custom
+    assert stored["models"]["bedrock"] == custom
+    update_settings({"scout": {"provider": "anthropic"}})
+    switched = load_settings()["scout"]
+    assert switched["provider"] == "anthropic"
+    assert switched["model"] == SCOUT_DEFAULT_MODELS["anthropic"]
+    assert switched["models"]["bedrock"] == custom
+    assert switched["bedrock_model"] == custom
+    update_settings({"scout": {"provider": "bedrock"}})
+    back = load_settings()["scout"]
+    assert back["provider"] == "bedrock"
+    assert back["model"] == custom
+    assert back["bedrock_model"] == custom
+    assert back["bedrock_region"] == "us-west-2"
+    public = public_settings()["scout"]
+    assert public["model"] == custom
+    assert public["models"]["bedrock"] == custom
+
+
+def test_task_legacy_fields_seed_models() -> None:
+    cleaned = validate_settings(
+        {
+            "tasks": {
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-0",
+                "bedrock_model": "us.anthropic.kept",
+            }
+        }
+    )
+    assert cleaned["scout"]["models"]["anthropic"] == "claude-sonnet-4-0"
+    assert cleaned["scout"]["models"]["bedrock"] == "us.anthropic.kept"
+    assert cleaned["scout"]["bedrock_model"] == "us.anthropic.kept"
+
+
+def test_task_tools_context_and_limits_clean() -> None:
+    cleaned = validate_settings(
+        {
+            "tasks": {
+                "tools": ["search", "write_file", "nope"],
+                "auto": ["write_file", "search", "fetch"],
+                "context": "be terse",
+                "max_tokens": 4000,
+                "duration_sec": 30,
+                "mcps": [{"id": "mcp-1", "name": "gh", "command": "npx", "transport": "stdio"}],
+            }
+        }
+    )
+    assert cleaned["scout"]["tools"] == ["search", "write_file"]
+    assert cleaned["scout"]["auto"] == ["write_file", "search"]
+    assert cleaned["scout"]["context"] == "be terse"
+    assert cleaned["scout"]["max_tokens"] == 4000
+    assert cleaned["scout"]["duration_sec"] == 30
+    assert cleaned["scout"]["mcps"][0]["command"] == "npx"
+    update_settings({"scout": cleaned["scout"]})
+    saved = update_settings({"scout": {"auto": ["search"], "max_tokens": 16000}})
+    assert saved["scout"]["auto"] == ["search"]
+    assert saved["scout"]["max_tokens"] == 16000
+    assert saved["scout"]["tools"] == ["search", "write_file"]
+    none = update_settings({"scout": {"max_tokens": 0, "duration_sec": 0}})
+    assert none["scout"]["max_tokens"] == 0
+    assert none["scout"]["duration_sec"] == 0
+    public = public_scout()
+    assert public["max_tokens"] == 0
+    assert public["duration_sec"] == 0
+    assert public["token_limits"][0] == 0
+    assert public["duration_limits"][0] == 0
+
+
+def test_legacy_task_tools_gain_browser() -> None:
+    cleaned = validate_settings(
+        {"scout": {"tools": ["search", "fetch", "run_script", "write_file", "read_file"], "auto": ["search", "fetch"]}}
+    )
+    assert "open_page" in cleaned["scout"]["tools"]
+    assert "open_page" in cleaned["scout"]["auto"]
+    assert "weather" in cleaned["scout"]["tools"]
+    assert "weather" in cleaned["scout"]["auto"]
+    assert "capture_screen" not in cleaned["scout"]["tools"]
+
+
+def test_old_tools_with_capture_gain_weather() -> None:
+    cleaned = validate_settings(
+        {
+            "scout": {
+                "tools": [
+                    "search",
+                    "fetch",
+                    "open_page",
+                    "run_script",
+                    "write_file",
+                    "read_file",
+                    "capture_screen",
+                ],
+                "auto": ["search", "fetch", "open_page", "capture_screen"],
+            }
+        }
+    )
+    assert "weather" in cleaned["scout"]["tools"]
+    assert "weather" in cleaned["scout"]["auto"]
+    assert "capture_screen" in cleaned["scout"]["tools"]
+    opted = validate_settings(
+        {
+            "scout": {
+                "tools_version": 2,
+                "tools": [
+                    "search",
+                    "fetch",
+                    "open_page",
+                    "run_script",
+                    "write_file",
+                    "read_file",
+                    "capture_screen",
+                ],
+                "auto": ["search", "fetch", "open_page"],
+            }
+        }
+    )
+    assert "weather" not in opted["scout"]["tools"]
+
+
+def test_capture_screen_is_opt_in() -> None:
+    from sonoscribe.settings import SCOUT_TOOLS, empty_scout, validate_settings
+
+    assert "capture_screen" not in empty_scout()["tools"]
+    assert "capture_screen" not in SCOUT_TOOLS
+    kept = validate_settings({"scout": {"tools": list(SCOUT_TOOLS) + ["capture_screen"]}})
+    assert "capture_screen" in kept["scout"]["tools"]
+    assert kept["scout"]["tools"][-1] == "capture_screen"
+
+
+def test_mcp_env_is_kept_and_redacted() -> None:
+    saved = update_settings(
+        {
+            "tasks": {
+                "mcps": [
+                    {
+                        "id": "mcp-1",
+                        "name": "gh",
+                        "command": "npx",
+                        "transport": "stdio",
+                        "env": {"TOKEN": "secret"},
+                    }
+                ]
+            }
+        }
+    )
+    assert saved["scout"]["mcps"][0]["env"]["TOKEN"] == "secret"
+    public = public_scout()
+    assert "env" not in public["mcps"][0]
+    assert public["mcps"][0]["has_env"] is True
+    again = update_settings({"scout": {"mcps": [{**public["mcps"][0], "auto": True}]}})
+    assert again["scout"]["mcps"][0]["env"]["TOKEN"] == "secret"
+    assert again["scout"]["mcps"][0]["auto"] is True
+
+
+def test_legacy_tasks_settings_load_as_scout() -> None:
+    cleaned = validate_settings({"tasks": {"provider": "grok", "model": "grok-3"}})
+    assert "tasks" not in cleaned
+    assert cleaned["scout"]["provider"] == "grok"
+    assert cleaned["scout"]["model"] == "grok-3"
+    saved = update_settings({"tasks": {"provider": "kimi"}})
+    assert "tasks" not in saved
+    assert saved["scout"]["provider"] == "kimi"

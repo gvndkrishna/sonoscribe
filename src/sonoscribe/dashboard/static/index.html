@@ -54,14 +54,43 @@
           </svg>
           <span>vocab</span>
         </button>
+        <button type="button" data-view="scout">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="8"/>
+            <path d="M12 5l2.4 8H9.6z"/>
+            <path d="M12 19l-1.6-5h3.2z"/>
+          </svg>
+          <span>scout</span>
+        </button>
+        <button type="button" data-view="scribe">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="5" y="3" width="14" height="18"/>
+            <path d="M8 8h8"/>
+            <path d="M8 12h8"/>
+            <path d="M8 16h5"/>
+          </svg>
+          <span>scribe</span>
+        </button>
       </nav>
-      <button type="button" id="open-settings" aria-label="Settings">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <circle cx="12" cy="12" r="3"/>
-          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
-        </svg>
-        <span class="settings-mark hidden" aria-hidden="true">*</span>
-      </button>
+      <div class="mast-tools">
+        <label class="find-field">
+          <span class="sr-only">Search</span>
+          <input id="find-query" type="search" placeholder="search" autocomplete="off" />
+        </label>
+        <button type="button" id="open-find" aria-label="Search" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="6"/>
+            <path d="M16 16l5 5"/>
+          </svg>
+        </button>
+        <button type="button" id="open-settings" aria-label="Settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+          </svg>
+          <span class="settings-mark hidden" aria-hidden="true">*</span>
+        </button>
+      </div>
     </header>
     <main>
       <section id="view-overview" class="view">
@@ -87,6 +116,7 @@
             </label>
           </div>
         </header>
+        <div id="find-hits" class="find-hits hidden"></div>
         <div class="instrument">
           <div class="instrument-rail">
             <span>ss–meter</span>
@@ -117,8 +147,14 @@
               <strong id="stat-words">0</strong>
               <span class="stat-fill" aria-hidden="true"></span>
             </article>
-            <article class="stat hidden" id="stat-devices-wrap">
+            <article class="stat">
               <span class="stat-index">05</span>
+              <span class="stat-label">scouts</span>
+              <strong id="stat-scouts">0</strong>
+              <span class="stat-fill" aria-hidden="true"></span>
+            </article>
+            <article class="stat hidden" id="stat-devices-wrap">
+              <span class="stat-index">06</span>
               <span class="stat-label">devices</span>
               <strong id="stat-devices">0</strong>
               <span class="stat-fill" aria-hidden="true"></span>
@@ -155,12 +191,13 @@
             </label>
           </header>
           <ul id="activity" class="activity"></ul>
+          <div id="activity-pager"></div>
         </article>
-        <footer class="overview-footer glass glass-box" tabindex="0" aria-label="Sonoscribe. Designed and Built by Govind Krishna.">
+        <footer class="overview-footer glass glass-box" tabindex="0" aria-label="Sonoscribe. Designed by Govind Krishna.">
           <div class="glass-fill" aria-hidden="true"></div>
           <div class="overview-footer-copy" aria-hidden="true">
             <span class="overview-footer-brand">sonoscribe</span>
-            <span class="overview-footer-credit">Designed and Built by Govind Krishna</span>
+            <span class="overview-footer-credit">Designed by Govind Krishna</span>
           </div>
         </footer>
       </section>
@@ -172,6 +209,8 @@
             <h1>commands</h1>
           </div>
           <div class="page-actions">
+            <button type="button" class="text-btn hidden" id="select-commands">select all</button>
+            <button type="button" class="text-btn hidden" id="delete-commands">delete</button>
             <button type="button" class="icon-btn hidden" id="reveal-commands" aria-label="Show secret commands" aria-pressed="false">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>
             </button>
@@ -179,10 +218,6 @@
           </div>
         </header>
         <div class="toolbar">
-          <label class="search">
-            <span class="sr-only">Search commands</span>
-            <input id="command-search" type="search" placeholder="search" autocomplete="off" />
-          </label>
           <div class="filters" id="command-filters">
             <button type="button" data-filter="all" class="active">all</button>
             <button type="button" data-filter="keyboard">keyboard</button>
@@ -195,6 +230,7 @@
           </div>
         </div>
         <div id="command-groups"></div>
+        <div id="command-pager"></div>
       </section>
 
       <section id="view-routines" class="view hidden">
@@ -204,6 +240,8 @@
             <h1>routines</h1>
           </div>
           <div class="page-actions">
+            <button type="button" class="text-btn hidden" id="select-routines">select all</button>
+            <button type="button" class="text-btn hidden" id="delete-routines">delete</button>
             <button type="button" class="icon-btn hidden" id="reveal-routines" aria-label="Show secret routines" aria-pressed="false">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>
             </button>
@@ -211,6 +249,7 @@
           </div>
         </header>
         <div id="routine-list"></div>
+        <div id="routine-pager"></div>
       </section>
 
       <section id="view-voice" class="view hidden">
@@ -220,21 +259,67 @@
             <h1>vocab</h1>
           </div>
           <div class="page-actions">
+            <button type="button" class="text-btn hidden" id="select-voice">select all</button>
+            <button type="button" class="text-btn hidden" id="delete-voice">delete</button>
             <button type="button" class="icon-btn hidden" id="reveal-voice" aria-label="Show secret vocab" aria-pressed="false">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>
             </button>
             <button type="button" class="icon-btn icon-plus" id="add-voice" aria-label="Add vocab">+</button>
           </div>
         </header>
-        <div class="toolbar">
-          <label class="search">
-            <span class="sr-only">Search vocab</span>
-            <input id="voice-search" type="search" placeholder="search" autocomplete="off" />
-          </label>
-        </div>
         <div id="voice-list"></div>
+        <div id="voice-pager"></div>
+      </section>
+
+      <section id="view-scout" class="view hidden">
+        <header class="page-head">
+          <div>
+            <p class="unit">05 / briefs</p>
+            <h1>scout</h1>
+          </div>
+          <div class="page-actions">
+            <button type="button" class="text-btn hidden" id="select-briefs">select all</button>
+            <button type="button" class="text-btn hidden" id="delete-briefs" aria-label="Delete selected briefs">delete</button>
+            <button type="button" class="text-btn hidden" id="cancel-scout" aria-label="Cancel scout">cancel</button>
+          </div>
+        </header>
+        <div id="scout-live" class="scout-live hidden"></div>
+        <div id="scout-list" class="brief-list"></div>
+        <div id="scout-pager"></div>
+      </section>
+
+      <section id="view-scribe" class="view hidden">
+        <header class="page-head">
+          <div>
+            <p class="unit">06 / vocanotes</p>
+            <h1>scribe</h1>
+          </div>
+        </header>
+        <form id="scribe-composer" class="scribe-composer">
+          <label class="scribe-field">
+            <span class="sr-only">New vocanote</span>
+            <input id="scribe-new" type="text" placeholder="a note, to-do, or reminder" autocomplete="off" />
+            <button type="submit" class="text-btn" id="scribe-add">add</button>
+          </label>
+          <p class="hint-line" id="scribe-hint">type, or hold <kbd>fn</kbd> while this field is focused</p>
+        </form>
+        <div id="scribe-list" class="scribe-list"></div>
+        <div id="scribe-pager"></div>
       </section>
     </main>
+  </div>
+  <div id="playground" class="glass glass-box" aria-hidden="true">
+    <div class="glass-fill" aria-hidden="true"></div>
+    <div class="playground-sheet">
+      <div class="playground-head">
+        <p class="unit" id="playground-kicker">playground</p>
+        <button type="button" class="text-btn" id="playground-clear">clear</button>
+        <button type="button" class="text-btn" id="playground-close">close</button>
+      </div>
+      <textarea id="playground-text" placeholder="hold fn to dictate" autocomplete="off"></textarea>
+      <p class="hint-line" id="playground-hint">hold <kbd>fn</kbd> · command mode off</p>
+      <p class="playground-cue" id="playground-cue">scroll to open playground mode</p>
+    </div>
   </div>
 
   <dialog id="settings" class="glass glass-box">
@@ -244,6 +329,7 @@
         <p class="unit">ss–set</p>
         <button type="button" data-settings-pane="personalization" class="active">personalization</button>
         <button type="button" data-settings-pane="model">model</button>
+        <button type="button" data-settings-pane="scout" aria-disabled="true">scout</button>
         <button type="button" data-settings-pane="account">account</button>
         <button type="button" data-settings-pane="sync" aria-disabled="true">sync<span class="settings-mark hidden" aria-hidden="true">*</span></button>
       </aside>
@@ -320,6 +406,81 @@
             <p id="model-status" class="hint-line"></p>
           </div>
         </section>
+        <section id="pane-scout" class="settings-pane hidden">
+          <h2>scout</h2>
+          <div class="form-stack" id="scout-settings">
+            <p class="hint-line" id="scout-lock-hint">set a lock on account first</p>
+            <div class="field">
+              <div class="field-label">model</div>
+              <div class="field-control">
+                <div class="type-picks" id="scout-providers"></div>
+                <div class="field-row">
+                  <input id="scout-model" type="text" placeholder="model" autocomplete="off" />
+                </div>
+                <div class="field-row hidden" id="scout-base-wrap">
+                  <input id="scout-base-url" type="text" placeholder="http://127.0.0.1:11434/v1" autocomplete="off" />
+                </div>
+                <div class="field-row hidden" id="scout-bedrock-wrap">
+                  <input id="scout-bedrock-region" type="text" placeholder="region" autocomplete="off" />
+                </div>
+                <div class="field-row hidden" id="scout-key-wrap">
+                  <input id="scout-key" type="password" placeholder="api key" autocomplete="off" />
+                  <button type="button" class="ghost" id="save-scout-key">save key</button>
+                </div>
+                <button type="button" class="text-btn hidden" id="change-scout-key">change api key</button>
+                <button type="button" class="text-btn hidden" id="cancel-scout-key">cancel</button>
+                <p class="hint-line" id="scout-key-status"></p>
+              </div>
+            </div>
+            <div class="field">
+              <div class="field-label">limits</div>
+              <div class="field-control">
+                <label class="lock-timeout">
+                  <span>tokens</span>
+                  <select id="scout-max-tokens"></select>
+                </label>
+                <label class="lock-timeout">
+                  <span>duration</span>
+                  <select id="scout-duration"></select>
+                </label>
+              </div>
+            </div>
+            <div class="field">
+              <div class="field-label">tools</div>
+              <div class="field-control" id="scout-tools"></div>
+            </div>
+            <div class="field">
+              <div class="field-label">context</div>
+              <div class="field-control">
+                <textarea id="scout-context" rows="4" placeholder="always remember this" autocomplete="off"></textarea>
+              </div>
+            </div>
+            <div class="field">
+              <div class="field-label">mcp</div>
+              <div class="field-control">
+                <div id="scout-mcps"></div>
+                <div class="type-picks" id="mcp-transport">
+                  <button type="button" data-mcp-transport="stdio" class="active">stdio</button>
+                  <button type="button" data-mcp-transport="http">http</button>
+                </div>
+                <div class="field-row">
+                  <input id="mcp-name" type="text" placeholder="name" autocomplete="off" />
+                </div>
+                <div class="field-row" id="mcp-stdio-wrap">
+                  <input id="mcp-command" type="text" placeholder="command" autocomplete="off" />
+                  <input id="mcp-args" type="text" placeholder="args" autocomplete="off" />
+                </div>
+                <div class="field-row hidden" id="mcp-http-wrap">
+                  <input id="mcp-url" type="text" placeholder="https://" autocomplete="off" />
+                </div>
+                <div class="field-row" id="mcp-env-wrap">
+                  <textarea id="mcp-env" rows="2" placeholder="KEY=value" autocomplete="off"></textarea>
+                </div>
+                <button type="button" class="text-btn" id="add-mcp">add mcp</button>
+              </div>
+            </div>
+          </div>
+        </section>
         <section id="pane-account" class="settings-pane hidden">
           <h2>account</h2>
           <div class="form-stack">
@@ -389,6 +550,56 @@
       </div>
     </div>
   </dialog>
+  <dialog id="brief" class="glass glass-box">
+    <div class="glass-fill" aria-hidden="true"></div>
+    <div class="brief-sheet">
+      <p class="unit" id="brief-kicker">brief</p>
+      <input id="brief-title" type="text" maxlength="80" autocomplete="off" />
+      <div id="brief-thread"></div>
+      <p class="hint-line" id="brief-hint">say scout, then a follow-up</p>
+      <div class="dialog-actions">
+        <button type="button" class="danger" id="brief-delete">delete</button>
+        <span class="grow"></span>
+        <button type="button" class="text-btn hidden" id="brief-cancel">cancel</button>
+        <button type="button" class="primary hidden" id="brief-insert">insert</button>
+        <button type="button" id="brief-close">close</button>
+      </div>
+    </div>
+  </dialog>
+  <dialog id="vocanote" class="glass glass-box">
+    <div class="glass-fill" aria-hidden="true"></div>
+    <form method="dialog" id="vocanote-form" class="brief-sheet">
+      <p class="unit" id="vocanote-kicker">vocanote</p>
+      <input id="vocanote-title" type="text" maxlength="200" autocomplete="off" placeholder="title" />
+      <textarea id="vocanote-body" placeholder="more, if you want" autocomplete="off"></textarea>
+      <div class="scribe-flags">
+        <label class="scribe-flag"><input id="vocanote-todo" type="checkbox" /> to-do</label>
+        <label class="scribe-flag"><input id="vocanote-reminder" type="checkbox" /> reminder</label>
+        <select id="vocanote-repeat" class="hidden" aria-label="repeat">
+          <option value="">once</option>
+          <option value="daily">daily</option>
+          <option value="weekdays">weekdays</option>
+          <option value="weekends">weekends</option>
+          <option value="weekly">weekly</option>
+          <option value="monday">every monday</option>
+          <option value="tuesday">every tuesday</option>
+          <option value="wednesday">every wednesday</option>
+          <option value="thursday">every thursday</option>
+          <option value="friday">every friday</option>
+          <option value="saturday">every saturday</option>
+          <option value="sunday">every sunday</option>
+        </select>
+        <input id="vocanote-due" type="datetime-local" class="hidden" />
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="primary hidden" id="vocanote-done">done</button>
+        <button type="button" class="danger" id="vocanote-delete">delete</button>
+        <span class="grow"></span>
+        <button type="button" id="vocanote-cancel">close</button>
+        <button type="submit" class="primary">save</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="editor" class="glass glass-box">
     <div class="glass-fill" aria-hidden="true"></div>
     <form method="dialog" id="editor-form">
@@ -401,6 +612,15 @@
         <button type="submit" class="primary">save</button>
       </div>
     </form>
+  </dialog>
+  <dialog id="tab-gate" class="lock-gate glass glass-box">
+    <div class="glass-fill" aria-hidden="true"></div>
+    <div class="lock-copy">
+      <p class="unit">dashboard</p>
+      <h1>another tab</h1>
+      <p class="lock-hint">this copy is open in another tab</p>
+      <button type="button" class="primary" id="tab-claim">use this tab</button>
+    </div>
   </dialog>
   <dialog id="lock-gate" class="lock-gate glass glass-box">
     <div class="glass-fill" aria-hidden="true"></div>

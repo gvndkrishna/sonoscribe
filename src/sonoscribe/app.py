@@ -23,7 +23,13 @@ import numpy as np
 import objc
 
 from sonoscribe.apps import frontmost_app, read_app
-from sonoscribe.catalog import command_by_id, load_library, match_utterance, skip_stats, usable_library
+from sonoscribe.catalog import (
+    command_by_id,
+    load_library,
+    match_utterance,
+    skip_stats,
+    usable_library,
+)
 from sonoscribe.cleaner import prepare_command_text, process
 from sonoscribe.dashboard.server import DashboardServer
 from sonoscribe.executor import KeyboardState, run_command, run_routine_steps
@@ -37,8 +43,40 @@ from sonoscribe.permissions import (
     permission_help,
     prompt_accessibility,
 )
-from sonoscribe.recorder import MINIMUM_SAMPLES, SAMPLE_RATE, Recorder, RecorderError
+from sonoscribe.recorder import (
+    MINIMUM_SAMPLES,
+    SAMPLE_RATE,
+    Recorder,
+    RecorderError,
+    attach_preroll,
+    take_command_preroll,
+)
 from sonoscribe.stats import StatsStore
+from sonoscribe.notify import (
+    BUBBLE_SECONDS,
+    notice_body,
+    notice_cancel_label,
+    notice_dismiss_label,
+    notice_insert_label,
+    notice_kicker,
+    notice_later_label,
+    notice_menu_label,
+    notice_run_label,
+    notice_script_body,
+    reminder_done_label,
+    reminder_kicker,
+    reminder_title,
+)
+from sonoscribe.scout import (
+    ScoutBusy,
+    ScoutConfigError,
+    confirm_scout,
+    set_brief_insert,
+    set_brief_notice,
+    set_scout_continue,
+    spoken_confirm,
+    start_scout,
+)
 from sonoscribe.transcriber import DEFAULT_MODEL, TranscribeError, Transcriber, friendly_load_error
 
 MIN_HOLD_SECONDS = 0.25
@@ -84,12 +122,89 @@ class _StatusMenuTarget(NSObject):
     def dashboard_(self, _sender=None):
         owner = self._owner
         if owner is not None:
-            owner._open_dashboard()
+            owner._open_dashboard(force=True)
+
+    def openBrief_(self, sender=None):
+        owner = self._owner
+        if owner is None:
+            return
+        run_id = ""
+        if sender is not None:
+            try:
+                run_id = str(sender.representedObject() or "")
+            except Exception:
+                run_id = ""
+        owner._open_pending_brief(run_id)
+
+    def insertBrief_(self, sender=None):
+        owner = self._owner
+        if owner is None:
+            return
+        run_id = ""
+        if sender is not None:
+            try:
+                run_id = str(sender.representedObject() or "")
+            except Exception:
+                run_id = ""
+        owner._insert_pending_brief(run_id)
+
+    def confirmBrief_(self, _sender=None):
+        owner = self._owner
+        if owner is not None:
+            owner._confirm_pending_brief(True)
+
+    def cancelBrief_(self, _sender=None):
+        owner = self._owner
+        if owner is not None:
+            owner._confirm_pending_brief(False)
+
+    def closeBriefBubble_(self, _sender=None):
+        owner = self._owner
+        if owner is not None:
+            owner._dismiss_brief_bubble()
+
+    def openScribeNote_(self, sender=None):
+        owner = self._owner
+        if owner is None:
+            return
+        note_id = ""
+        if sender is not None:
+            try:
+                note_id = str(sender.representedObject() or "")
+            except Exception:
+                note_id = ""
+        owner._open_pending_note(note_id)
+
+    def doneScribeNote_(self, sender=None):
+        owner = self._owner
+        if owner is None:
+            return
+        note_id = ""
+        if sender is not None:
+            try:
+                note_id = str(sender.representedObject() or "")
+            except Exception:
+                note_id = ""
+        owner._done_pending_note(note_id)
+
+    def closeScribeBubble_(self, _sender=None):
+        owner = self._owner
+        if owner is not None:
+            owner._dismiss_scribe_bubble(advance=True)
 
     def quit_(self, _sender=None):
         owner = self._owner
         if owner is not None:
             owner._quit()
+
+
+class _BriefPopoverDelegate(NSObject):
+    _owner = objc.ivar()
+
+    def popoverDidClose_(self, _notification=None):
+        owner = self._owner
+        if owner is not None:
+            owner._dismiss_brief_bubble()
 
 
 class App:
@@ -112,6 +227,7 @@ class App:
         self._in_command = False
         self._used_command = False
         self._command_frontmost: dict[str, str] | None = None
+        self._command_preroll = np.zeros(0, dtype=np.float32)
         self._session = 0
         self._pending = 0
         self._want_idle = False
@@ -127,6 +243,19 @@ class App:
         self._status_menu = None
         self._status_target = None
         self._dashboard_item = None
+        self._brief_menu_item = None
+        self._brief_menu_sep = None
+        self._brief_popover = None
+        self._brief_popover_delegate = None
+        self._brief_insert_btn = None
+        self._brief_close_btn = None
+        self._brief_action_btns = []
+        self._pending_brief_id = ""
+        self._pending_open_url = ""
+        self._pending_note_id = ""
+        self._notice_kind = ""
+        self._scribe_done_btn = None
+        self._bubble_token = 0
         self._dashboard: DashboardServer | None = None
         self._key_capture = KeyCapture()
         self._quitting = False
@@ -272,9 +401,12 @@ class App:
         self._dashboard = server
         if self._dashboard_item is not None:
             self._dashboard_item.setEnabled_(True)
+        set_brief_notice(lambda run: _on_main(lambda: self._on_brief_notice(run)))
+        set_brief_insert(lambda run: _on_main(lambda: self._insert_brief_run(run)))
         _log(f"Dashboard {server.url}")
         threading.Thread(target=self._pull_library, daemon=True).start()
         threading.Thread(target=self._sync_loop, daemon=True).start()
+        threading.Thread(target=self._scribe_loop, daemon=True).start()
 
     def _pull_library(self) -> None:
         from sonoscribe.sync import SyncError, pull
@@ -314,11 +446,29 @@ class App:
             if result.get("changed"):
                 _log("Sync: library updated from the cloud")
 
-    def _open_dashboard(self) -> None:
+    def _open_dashboard(self, view: str = "", *, force: bool = False) -> None:
         if self._dashboard is None:
             _log("Dashboard is not running.")
             return
-        subprocess.run(["open", self._dashboard.url], check=False)
+        if view:
+            self._dashboard.request_focus(view)
+        if not force and self._dashboard.client_open():
+            return
+        url = self._dashboard.url
+        if view:
+            url = url.rstrip("/") + f"/#{view}"
+        _on_main(lambda: self._reveal_dashboard(url))
+
+    def _reveal_dashboard(self, url: str) -> None:
+        try:
+            from AppKit import NSWorkspace
+
+            nsurl = NSURL.URLWithString_(url)
+            if nsurl is not None and NSWorkspace.sharedWorkspace().openURL_(nsurl):
+                return
+        except Exception:
+            pass
+        subprocess.run(["open", url], check=False)
 
     def _pick_path(self) -> str | None:
         chosen: list[str | None] = [None]
@@ -379,6 +529,12 @@ class App:
             return
         self._quitting = True
         _log("Quitting…")
+        set_brief_notice(None)
+        set_brief_insert(None)
+        try:
+            self._dismiss_brief_notice()
+        except Exception:
+            pass
         try:
             self._monitor.stop()
         except Exception:
@@ -486,22 +642,28 @@ class App:
             self._in_command = False
             self._used_command = False
             self._command_frontmost = None
+            self._command_preroll = np.zeros(0, dtype=np.float32)
             self._want_idle = False
             self._hold_started = time.monotonic()
             self._phase = "recording"
             _log("Listening — hold Cmd for commands, release Fn to finish")
 
     def on_command_begin(self) -> None:
+        if self._dashboard is not None and self._dashboard.test_listening():
+            return
         snapped = _safe_frontmost()
         with self._lock:
             if self._phase != "recording" or self._in_command:
                 return
-            samples, end = self.recorder.snapshot(self._slice_start)
+            leftover, end = self.recorder.snapshot(self._slice_start)
             self._slice_start = end
             self._in_command = True
             self._used_command = True
             self._command_frontmost = snapped
-            self._enqueue_locked("dictate", samples, self._session)
+            preroll, dictate = take_command_preroll(leftover)
+            self._command_preroll = preroll
+            if dictate is not None:
+                self._enqueue_locked("dictate", dictate, self._session)
             _log("Command mode")
 
     def on_command_end(self) -> None:
@@ -511,6 +673,8 @@ class App:
             samples, end = self.recorder.snapshot(self._slice_start)
             self._slice_start = end
             self._in_command = False
+            samples = attach_preroll(self._command_preroll, samples)
+            self._command_preroll = np.zeros(0, dtype=np.float32)
             self._enqueue_locked("command", samples, self._session, self._command_frontmost)
             _log("Dictating")
 
@@ -522,6 +686,7 @@ class App:
             self._session += 1
             self._in_command = False
             self._command_frontmost = None
+            self._command_preroll = np.zeros(0, dtype=np.float32)
             self._hold_started = None
             self._want_idle = True
             self._phase = "busy" if self._pending else "idle"
@@ -533,12 +698,15 @@ class App:
             elapsed = time.monotonic() - (self._hold_started or 0)
             leftover, _end = self.recorder.snapshot(self._slice_start)
             kind = "command" if self._in_command else "dictate"
+            if kind == "command":
+                leftover = attach_preroll(self._command_preroll, leftover)
             used_command = self._used_command
             session = self._session
             frontmost = self._command_frontmost if kind == "command" else None
             self.recorder.stop()
             self._in_command = False
             self._command_frontmost = None
+            self._command_preroll = np.zeros(0, dtype=np.float32)
             self._hold_started = None
             self._slice_start = 0
             self._want_idle = True
@@ -583,13 +751,16 @@ class App:
         if job.session != current:
             return
         _log("Transcribing…")
-        result = self.transcriber.transcribe(job.samples)
+        kind = job.kind
+        if kind == "command" and self._dashboard is not None and self._dashboard.test_listening():
+            kind = "dictate"
+        result = self.transcriber.transcribe(job.samples, mode=kind)
         with self._lock:
             if job.session != self._session:
                 return
         heard = result.text.strip()
         _log(f"Heard: {heard or '(empty)'}")
-        if job.kind == "command":
+        if kind == "command":
             self._run_command_text(heard, job.frontmost)
             return
         text = process(heard, remove_fillers=self.remove_fillers) if heard else ""
@@ -608,6 +779,21 @@ class App:
             return
         library = usable_library(load_library())
         hit = match_utterance(cleaned, library, frontmost=frontmost)
+        if spoken_confirm(cleaned):
+            _log("Scout confirm")
+            return
+        if hit.kind == "scout_incomplete":
+            self._open_dashboard("scout")
+            return
+        if hit.kind == "scout":
+            self._run_spoken_scout(hit)
+            return
+        if hit.kind == "scribe_incomplete":
+            self._open_dashboard("scribe")
+            return
+        if hit.kind == "scribe":
+            self._run_spoken_scribe(hit)
+            return
         if hit.kind == "routine_incomplete":
             _log("Unknown command: routine")
             return
@@ -664,6 +850,483 @@ class App:
                     )
 
             self._call_main(run)
+
+    def _run_spoken_scribe(self, hit) -> None:
+        from sonoscribe.catalog import LibraryError
+        from sonoscribe.dashboard.server import _push_in_background
+        from sonoscribe.scribe.store import create_from_text
+
+        text = str((hit.bindings or {}).get("text") or hit.label or "").strip()
+        if not text:
+            self._open_dashboard("scribe")
+            return
+        try:
+            note = create_from_text(text)
+        except LibraryError as exc:
+            _log(str(exc))
+            return
+        _log(f"Scribe {note.get('title') or text}")
+        _push_in_background()
+
+    def _scribe_loop(self) -> None:
+        while not self._quitting:
+            time.sleep(15)
+            _on_main(self._tick_reminders)
+
+    def _tick_reminders(self) -> None:
+        if self._notice_kind == "scribe" and self._pending_note_id:
+            return
+        from sonoscribe.scribe.store import due_vocanotes, mark_notified
+        from sonoscribe.dashboard.server import _push_in_background
+
+        notes = due_vocanotes()
+        if not notes:
+            return
+        note = notes[0]
+        ident = str(note.get("id") or "")
+        if not ident:
+            return
+        marked = mark_notified(ident)
+        if marked:
+            note = marked
+        _push_in_background()
+        self._show_scribe_notice(note)
+
+    def _open_pending_note(self, note_id: str = "") -> None:
+        ident = str(note_id or self._pending_note_id or "").strip()
+        self._dismiss_scribe_bubble(advance=True)
+        if not ident:
+            return
+        if self._dashboard is not None:
+            self._dashboard.request_open_note(ident)
+        self._open_dashboard("scribe")
+
+    def _done_pending_note(self, note_id: str = "") -> None:
+        from sonoscribe.dashboard.server import _push_in_background
+        from sonoscribe.scribe.parse import normalize_repeat
+        from sonoscribe.scribe.store import advance_repeat, delete_vocanotes, get_vocanote
+
+        ident = str(note_id or self._pending_note_id or "").strip()
+        note = get_vocanote(ident) if ident else None
+        self._dismiss_scribe_bubble()
+        if not ident:
+            return
+        if note and normalize_repeat(note.get("repeat")):
+            advance_repeat(ident)
+        else:
+            delete_vocanotes([ident])
+        _push_in_background()
+        _log(f"Scribe done {ident}")
+
+    def _dismiss_scribe_bubble(self, advance: bool = False) -> None:
+        ident = self._pending_note_id if self._notice_kind == "scribe" else ""
+        if self._notice_kind == "scribe":
+            self._notice_kind = ""
+            self._pending_note_id = ""
+        if advance and ident:
+            try:
+                from sonoscribe.scribe.parse import normalize_repeat
+                from sonoscribe.scribe.store import advance_repeat, get_vocanote
+
+                note = get_vocanote(ident)
+                if note and normalize_repeat(note.get("repeat")):
+                    advance_repeat(ident)
+                    from sonoscribe.dashboard.server import _push_in_background
+
+                    _push_in_background()
+            except Exception:
+                pass
+        self._dismiss_brief_bubble()
+
+    def _show_scribe_notice(self, note: dict[str, Any]) -> None:
+        ident = str(note.get("id") or "").strip()
+        if not ident:
+            return
+        title = reminder_title(note)
+        self._dismiss_brief_bubble()
+        self._notice_kind = "scribe"
+        self._pending_note_id = ident
+        self._present_status_bubble(
+            kicker=reminder_kicker(),
+            body=title,
+            actions=(
+                (reminder_done_label(), "doneScribeNote:"),
+                (notice_later_label(), "closeScribeBubble:"),
+            ),
+            represented=ident,
+            hit_action="openScribeNote:",
+            holds=True,
+        )
+
+    def _run_spoken_scout(self, hit) -> None:
+        bindings = hit.bindings or {}
+        prompt = str(bindings.get("prompt") or "").strip()
+        raw_ref = str(bindings.get("ref") or "").strip()
+        if raw_ref == "":
+            self._start_scout(prompt, source="prefix", frontmost=self._command_frontmost)
+            return
+        from sonoscribe.scout.store import resolve_scout_ref
+
+        run = resolve_scout_ref(raw_ref)
+        if run is None:
+            if prompt:
+                self._start_scout(
+                    f"{raw_ref} {prompt}".strip(),
+                    source="prefix",
+                    frontmost=self._command_frontmost,
+                )
+            else:
+                _log("no brief at that number")
+                self._open_dashboard("scout")
+            return
+        ident = str(run.get("id") or "")
+        sku = str(run.get("sku") or "")
+        title = str(run.get("title") or prompt or "brief")
+        set_scout_continue(ident)
+        self._open_brief(ident)
+        if prompt:
+            self._start_scout(prompt, source="prefix", frontmost=self._command_frontmost)
+            return
+        _log(f"Scout {sku} {title}")
+        self._open_dashboard("scout")
+
+    def _open_brief(self, run_id: str) -> None:
+        if self._dashboard is not None:
+            self._dashboard.request_open_brief(run_id)
+
+    def _on_brief_notice(self, run: dict[str, Any]) -> None:
+        run_id = str(run.get("id") or "").strip()
+        if not run_id:
+            return
+        if self._dashboard is not None and self._dashboard.scout_page_open():
+            return
+        self._pending_brief_id = run_id
+        self._pending_open_url = str(run.get("open_url") or "")
+        self._show_brief_notice(run)
+
+    def _open_pending_brief(self, run_id: str = "") -> None:
+        ident = str(run_id or self._pending_brief_id or "").strip()
+        url = str(self._pending_open_url or "")
+        if ident and not url:
+            from sonoscribe.scout.store import get_run
+
+            found = get_run(ident)
+            url = str((found or {}).get("open_url") or "")
+        self._dismiss_brief_notice()
+        if not ident:
+            return
+        self._open_brief(ident)
+        self._open_queued_page(url)
+        self._open_dashboard("scout")
+
+    def _open_queued_page(self, url: str) -> None:
+        target = str(url or "").strip()
+        if not target:
+            return
+        from sonoscribe.scout.tools import ToolError, open_queued_page
+
+        try:
+            open_queued_page(target)
+        except ToolError:
+            return
+
+    def _show_brief_notice(self, run: dict[str, Any]) -> None:
+        from AppKit import NSMenuItem
+
+        from sonoscribe.scout.insert import notice_holds_bubble, notice_shows_insert
+
+        status = str(run.get("status") or "")
+        kicker = notice_kicker(status)
+        body = notice_body(run)
+        preview = notice_script_body(run)
+        shows_insert = notice_shows_insert(run)
+        holds = notice_holds_bubble(run)
+        self._dismiss_brief_notice()
+        self._notice_kind = "scout"
+        self._pending_note_id = ""
+        self._pending_brief_id = str(run.get("id") or "")
+        self._pending_open_url = str(run.get("open_url") or "")
+        menu = self._status_menu
+        target = self._status_target
+        if menu is not None and target is not None:
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                notice_menu_label(run), "openBrief:", ""
+            )
+            item.setTarget_(target)
+            item.setEnabled_(True)
+            item.setRepresentedObject_(self._pending_brief_id)
+            sep = NSMenuItem.separatorItem()
+            menu.insertItem_atIndex_(item, 0)
+            menu.insertItem_atIndex_(sep, 1)
+            self._brief_menu_item = item
+            self._brief_menu_sep = sep
+        actions: tuple[tuple[str, str], ...] = ()
+        if status == "needs_confirm":
+            actions = (
+                (notice_run_label(), "confirmBrief:"),
+                (notice_cancel_label(), "cancelBrief:"),
+            )
+            holds = True
+        elif shows_insert:
+            actions = (
+                (notice_insert_label(), "insertBrief:"),
+                (notice_dismiss_label(), "closeBriefBubble:"),
+            )
+        self._present_status_bubble(
+            kicker=kicker,
+            body=body,
+            preview=preview,
+            actions=actions,
+            represented=self._pending_brief_id,
+            hit_action="openBrief:",
+            holds=holds,
+        )
+
+    def _confirm_pending_brief(self, ok: bool) -> None:
+        self._dismiss_brief_bubble()
+        try:
+            confirm_scout(bool(ok))
+        except Exception as exc:
+            _log(str(exc))
+
+    def _present_status_bubble(
+        self,
+        *,
+        kicker: str,
+        body: str,
+        preview: str = "",
+        actions: tuple[tuple[str, str], ...] = (),
+        represented: str,
+        hit_action: str,
+        holds: bool,
+    ) -> None:
+        import AppKit
+        from AppKit import (
+            NSButton,
+            NSFont,
+            NSMakeRect,
+            NSMinYEdge,
+            NSPopover,
+            NSPopoverBehaviorTransient,
+            NSTextField,
+            NSView,
+            NSViewController,
+        )
+        from sonoscribe.settings import load_settings
+
+        target = self._status_target
+        button = self._status_item.button() if self._status_item is not None else None
+        if button is not None:
+            button.setToolTip_(f"{kicker} · {body}")
+        if button is None or target is None:
+            return
+        bezel = getattr(AppKit, "NSBezelStyleShadowlessSquare", None) or getattr(
+            AppKit, "NSShadowlessSquareBezelStyle", 6
+        )
+        press = getattr(AppKit, "NSMomentaryLightButton", None) or getattr(
+            AppKit, "NSButtonTypeMomentaryLight", 0
+        )
+        pad = 12
+        kicker_h = 14
+        body_h = 16
+        action_h = 22 if actions else 0
+        preview_lines = preview.count("\n") + 1 if preview else 0
+        preview_h = preview_lines * 14 if preview else 0
+        width = 360 if preview else 280
+        height = pad + kicker_h + 8 + body_h + pad
+        if preview:
+            height += 8 + preview_h
+        if actions:
+            height += 8 + action_h
+        sheet = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, width, height))
+        top = height - pad - kicker_h
+        mark = NSTextField.alloc().initWithFrame_(NSMakeRect(pad, top, width - pad * 2, kicker_h))
+        mark.setStringValue_(kicker)
+        mark.setBezeled_(False)
+        mark.setDrawsBackground_(False)
+        mark.setEditable_(False)
+        mark.setSelectable_(False)
+        top -= 8 + body_h
+        line = NSTextField.alloc().initWithFrame_(NSMakeRect(pad, top, width - pad * 2, body_h))
+        line.setStringValue_(body)
+        line.setBezeled_(False)
+        line.setDrawsBackground_(False)
+        line.setEditable_(False)
+        line.setSelectable_(False)
+        try:
+            line.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)
+        except Exception:
+            pass
+        hit = NSButton.alloc().initWithFrame_(NSMakeRect(pad, top, width - pad * 2, body_h + 8 + kicker_h))
+        hit.setButtonType_(press)
+        hit.setBezelStyle_(bezel)
+        hit.setBordered_(False)
+        hit.setTitle_("")
+        hit.setTarget_(target)
+        hit.setAction_(hit_action)
+        hit.setRepresentedObject_(represented)
+        sheet.addSubview_(mark)
+        sheet.addSubview_(line)
+        sheet.addSubview_(hit)
+        if preview:
+            top -= 8 + preview_h
+            block = NSTextField.alloc().initWithFrame_(NSMakeRect(pad, top, width - pad * 2, preview_h))
+            block.setStringValue_(preview)
+            block.setBezeled_(False)
+            block.setDrawsBackground_(False)
+            block.setEditable_(False)
+            block.setSelectable_(False)
+            try:
+                block.setFont_(NSFont.userFixedPitchFontOfSize_(11))
+                block.setUsesSingleLineMode_(False)
+                cell = block.cell()
+                if cell is not None:
+                    cell.setWraps_(True)
+            except Exception:
+                pass
+            sheet.addSubview_(block)
+        buttons = []
+        if actions:
+            x = pad
+            for label, action in actions:
+                btn = NSButton.alloc().initWithFrame_(NSMakeRect(x, pad, 64, action_h))
+                btn.setButtonType_(press)
+                btn.setBezelStyle_(bezel)
+                btn.setBordered_(False)
+                btn.setTitle_(label)
+                btn.setTarget_(target)
+                btn.setAction_(action)
+                btn.setRepresentedObject_(represented)
+                try:
+                    btn.setFont_(NSFont.systemFontOfSize_(12))
+                    btn.sizeToFit()
+                    fitted = btn.frame()
+                    btn.setFrame_(NSMakeRect(x, pad, max(fitted.size.width + 8, 44), action_h))
+                except Exception:
+                    pass
+                sheet.addSubview_(btn)
+                buttons.append(btn)
+                x += btn.frame().size.width + 16
+        self._brief_action_btns = buttons
+        self._brief_insert_btn = buttons[0] if buttons else None
+        self._brief_close_btn = buttons[1] if len(buttons) > 1 else None
+        self._scribe_done_btn = buttons[0] if self._notice_kind == "scribe" and buttons else None
+        host = NSViewController.alloc().init()
+        host.setView_(sheet)
+        pop = NSPopover.alloc().init()
+        delegate = _BriefPopoverDelegate.alloc().init()
+        delegate._owner = self
+        pop.setContentViewController_(host)
+        pop.setContentSize_(sheet.frame().size)
+        defined = getattr(AppKit, "NSPopoverBehaviorApplicationDefined", None)
+        if holds and defined is not None:
+            pop.setBehavior_(defined)
+        else:
+            pop.setBehavior_(NSPopoverBehaviorTransient)
+        pop.setAnimates_(not bool(load_settings().get("reduce_motion")))
+        pop.setDelegate_(delegate)
+        pop.showRelativeToRect_ofView_preferredEdge_(button.bounds(), button, NSMinYEdge)
+        self._brief_popover_delegate = delegate
+        self._brief_popover = pop
+        if not holds:
+            self._schedule_bubble_dismiss(self._pending_brief_id or self._pending_note_id)
+
+    def _schedule_bubble_dismiss(self, run_id: str) -> None:
+        self._bubble_token += 1
+        token = self._bubble_token
+
+        def wait() -> None:
+            time.sleep(BUBBLE_SECONDS)
+            _on_main(lambda: self._expire_brief_bubble(run_id, token))
+
+        threading.Thread(target=wait, daemon=True).start()
+
+    def _expire_brief_bubble(self, run_id: str, token: int) -> None:
+        if token != self._bubble_token:
+            return
+        if str(self._pending_brief_id or "") != str(run_id or ""):
+            return
+        self._dismiss_brief_bubble()
+
+    def _dismiss_brief_bubble(self) -> None:
+        pop = self._brief_popover
+        self._brief_popover = None
+        self._brief_popover_delegate = None
+        self._brief_insert_btn = None
+        self._brief_close_btn = None
+        self._brief_action_btns = []
+        self._scribe_done_btn = None
+        if self._notice_kind == "scribe":
+            self._notice_kind = ""
+            self._pending_note_id = ""
+        if pop is not None:
+            try:
+                pop.setDelegate_(None)
+                pop.performClose_(None)
+            except Exception:
+                pass
+        button = self._status_item.button() if self._status_item is not None else None
+        if button is not None:
+            button.setToolTip_("Sonoscribe")
+
+    def _dismiss_brief_notice(self) -> None:
+        self._bubble_token += 1
+        self._dismiss_brief_bubble()
+        menu = self._status_menu
+        item = self._brief_menu_item
+        sep = self._brief_menu_sep
+        self._brief_menu_item = None
+        self._brief_menu_sep = None
+        for piece in (item, sep):
+            if menu is not None and piece is not None:
+                try:
+                    menu.removeItem_(piece)
+                except Exception:
+                    pass
+        self._pending_brief_id = ""
+        self._pending_open_url = ""
+
+    def _start_scout(
+        self,
+        prompt: str,
+        *,
+        source: str = "prefix",
+        frontmost: dict[str, str] | None = None,
+    ) -> None:
+        snapped = frontmost if frontmost is not None else self._command_frontmost
+        try:
+            start_scout(prompt, stats=self.stats, source=source, frontmost=snapped)
+        except ScoutBusy:
+            _log("a scout is already running")
+            self._open_dashboard("scout")
+            return
+        except ScoutConfigError as exc:
+            _log(str(exc))
+            self._open_dashboard("scout")
+            return
+        _log(f"Scout {prompt}")
+
+    def _insert_pending_brief(self, run_id: str = "") -> None:
+        ident = str(run_id or self._pending_brief_id or "").strip()
+        if not ident:
+            return
+        from sonoscribe.scout.store import get_run
+
+        self._insert_brief_run(get_run(ident) or {"id": ident})
+
+    def _insert_brief_run(self, run: dict[str, Any] | None) -> None:
+        from sonoscribe.scout.insert import activate_frontmost, insert_text_from_run, needs_restore_app
+
+        data = run if isinstance(run, dict) else {}
+        text = insert_text_from_run(data)
+        if not text:
+            return
+        self._dismiss_brief_bubble()
+        front = data.get("frontmost") if isinstance(data.get("frontmost"), dict) else None
+        if needs_restore_app(front, _safe_frontmost()) and activate_frontmost(front):
+            threading.Timer(0.12, lambda: _on_main(lambda: self._paste(text))).start()
+            return
+        self._paste(text)
 
     def _paste(self, text: str) -> None:
         insert(text, copy_only=self.copy_only)

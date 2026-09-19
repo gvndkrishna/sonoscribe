@@ -9,6 +9,25 @@ import sounddevice as sd
 
 SAMPLE_RATE = 16_000
 MINIMUM_SAMPLES = int(SAMPLE_RATE * 0.3)
+COMMAND_PREROLL = SAMPLE_RATE
+
+
+def take_command_preroll(leftover: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
+    """Keep a short leftover with the command so `task` is not cut off at Cmd-down."""
+    audio = np.ascontiguousarray(leftover, dtype=np.float32).reshape(-1)
+    if 0 < audio.size < COMMAND_PREROLL:
+        return audio, None
+    return np.zeros(0, dtype=np.float32), audio if audio.size else None
+
+
+def attach_preroll(preroll: np.ndarray, samples: np.ndarray) -> np.ndarray:
+    head = np.ascontiguousarray(preroll, dtype=np.float32).reshape(-1)
+    body = np.ascontiguousarray(samples, dtype=np.float32).reshape(-1)
+    if head.size == 0:
+        return body
+    if body.size == 0:
+        return head
+    return np.concatenate([head, body])
 
 
 class RecorderError(RuntimeError):

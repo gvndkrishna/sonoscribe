@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import threading
+import time
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -37,8 +38,22 @@ from sonoscribe.settings import (
     public_account,
     public_model_state,
     public_settings,
+    public_scout,
     remove_custom_model,
     update_settings,
+)
+from sonoscribe.scout import (
+    KeychainError,
+    cancel_scout,
+    confirm_scout,
+    current_scout,
+    delete_scouts,
+    rename_scout,
+    request_insert,
+    set_scout_continue,
+    set_scout_key,
+    scout_continue_id,
+    scout_history,
 )
 from sonoscribe.stats import StatsStore
 from sonoscribe.sync import (
@@ -56,9 +71,17 @@ from sonoscribe.sync import (
     status,
     validate,
 )
+from sonoscribe.scribe.store import (
+    create_from_text,
+    delete_vocanotes,
+    dismiss_vocanote,
+    list_vocanotes,
+    upsert_vocanote,
+)
 from sonoscribe.transcriber import TranscribeError
 
 DEFAULT_PORT = 8741
+VIEWS = frozenset({"overview", "commands", "routines", "voice", "scout", "scribe"})
 _MIME = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
@@ -145,15 +168,117 @@ class DashboardServer:
         self._test_lock = threading.Lock()
         self._test_listen = False
         self._test_text = ""
+        self._scribe_text = ""
+        self._test_sink = "test"
+        self._focus_lock = threading.Lock()
+        self._client_seen = 0.0
+        self._focus_view = ""
+        self._open_brief = ""
+        self._open_note = ""
+        self._active_tab = ""
+        self._client_view = ""
+
+    def note_client(self, tab: str = "", view: str = "", claim: bool = False) -> str:
+        ident = str(tab or "").strip()[:80]
+        name = str(view or "").strip()
+        if name not in VIEWS:
+            name = ""
+        with self._focus_lock:
+            self._client_seen = time.monotonic()
+            if ident:
+                if claim or not self._active_tab:
+                    self._active_tab = ident
+                if ident == self._active_tab:
+                    if name:
+                        self._client_view = name
+                    return "ok"
+                return "stale"
+            if name:
+                self._client_view = name
+            return "ok"
+
+    def scout_page_open(self) -> bool:
+        with self._focus_lock:
+            if not self._client_seen or (time.monotonic() - self._client_seen) >= 20:
+                return False
+            return self._client_view == "scout"
+
+    def request_focus(self, view: str) -> None:
+        name = str(view or "").strip()
+        if name not in VIEWS:
+            return
+        with self._focus_lock:
+            self._focus_view = name
+
+    def request_open_brief(self, run_id: str) -> None:
+        ident = str(run_id or "").strip()
+        with self._focus_lock:
+            self._open_brief = ident
+            if ident:
+                self._focus_view = "scout"
+
+    def request_open_note(self, note_id: str) -> None:
+        ident = str(note_id or "").strip()
+        with self._focus_lock:
+            self._open_note = ident
+            if ident:
+                self._focus_view = "scribe"
+
+    def client_open(self) -> bool:
+        with self._focus_lock:
+            return bool(self._client_seen) and (time.monotonic() - self._client_seen) < 20
+
+    def consume_focus(self, tab: str = "") -> str:
+        ident = str(tab or "").strip()
+        with self._focus_lock:
+            if ident and self._active_tab and ident != self._active_tab:
+                return ""
+            view = self._focus_view
+            self._focus_view = ""
+            return view
+
+    def peek_open_brief(self, tab: str = "") -> str:
+        ident = str(tab or "").strip()
+        with self._focus_lock:
+            if ident and self._active_tab and ident != self._active_tab:
+                return ""
+            return self._open_brief
+
+    def consume_open_brief(self, tab: str = "") -> str:
+        ident = str(tab or "").strip()
+        with self._focus_lock:
+            if ident and self._active_tab and ident != self._active_tab:
+                return ""
+            brief = self._open_brief
+            self._open_brief = ""
+            return brief
+
+    def peek_open_note(self, tab: str = "") -> str:
+        ident = str(tab or "").strip()
+        with self._focus_lock:
+            if ident and self._active_tab and ident != self._active_tab:
+                return ""
+            return self._open_note
+
+    def consume_open_note(self, tab: str = "") -> str:
+        ident = str(tab or "").strip()
+        with self._focus_lock:
+            if ident and self._active_tab and ident != self._active_tab:
+                return ""
+            note = self._open_note
+            self._open_note = ""
+            return note
 
     def test_state(self, live: dict[str, Any] | None = None) -> dict[str, Any]:
         live = live if isinstance(live, dict) else {}
         with self._test_lock:
-            text = self._test_text
+            text = self._scribe_text if self._test_sink == "scribe" else self._test_text
             listen = self._test_listen
+            sink = self._test_sink
         return {
             "text": text,
             "listen": listen,
+            "sink": sink,
             "model": str(live.get("active") or live.get("model") or ""),
             "status": str(live.get("status") or "ready"),
             "phase": str(live.get("phase") or ""),
@@ -162,10 +287,16 @@ class DashboardServer:
     def set_test(self, patch: dict[str, Any] | None, live: dict[str, Any] | None = None) -> dict[str, Any]:
         patch = patch if isinstance(patch, dict) else {}
         with self._test_lock:
+            if "sink" in patch:
+                sink = str(patch.get("sink") or "test").strip()
+                self._test_sink = sink if sink in {"test", "scribe"} else "test"
             if "listen" in patch:
                 self._test_listen = bool(patch["listen"])
             if patch.get("clear"):
-                self._test_text = ""
+                if self._test_sink == "scribe":
+                    self._scribe_text = ""
+                else:
+                    self._test_text = ""
         return self.test_state(live)
 
     def append_test(self, text: str) -> bool:
@@ -175,10 +306,71 @@ class DashboardServer:
         with self._test_lock:
             if not self._test_listen:
                 return False
-            if self._test_text and not self._test_text.endswith((" ", "\n")):
-                self._test_text += " "
-            self._test_text += chunk
+            if self._test_sink == "scribe":
+                if self._scribe_text and not self._scribe_text.endswith((" ", "\n")):
+                    self._scribe_text += " "
+                self._scribe_text += chunk
+            else:
+                if self._test_text and not self._test_text.endswith((" ", "\n")):
+                    self._test_text += " "
+                self._test_text += chunk
             return True
+
+    def test_listening(self) -> bool:
+        with self._test_lock:
+            return self._test_listen
+
+    def presence_payload(self, query: str = "") -> dict[str, Any]:
+        tab, view, claim = _parse_tab(query)
+        status = self.note_client(tab=tab, view=view, claim=claim)
+        if status == "stale":
+            return {"focus": "", "open_id": "", "open_note": "", "tab": "stale"}
+        return {
+            "focus": self.consume_focus(tab),
+            "open_id": self.peek_open_brief(tab),
+            "open_note": self.peek_open_note(tab),
+            "tab": "ok",
+        }
+
+    def scribe_payload(self, query: str = "", *, secrets: bool = False) -> dict[str, Any]:
+        tab, view, claim = _parse_tab(query)
+        status = self.note_client(tab=tab, view=view, claim=claim)
+        items = list_vocanotes(secrets=secrets)
+        gone = [
+            str(item.get("id") or "").strip()
+            for item in (load_library().get("vocanote_gone") or [])
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        ]
+        if status == "stale":
+            return {"items": items, "gone": gone, "open_id": "", "focus": "", "tab": "stale"}
+        return {
+            "items": items,
+            "gone": gone,
+            "open_id": self.consume_open_note(tab),
+            "focus": self.consume_focus(tab),
+            "tab": "ok",
+        }
+
+    def scout_payload(self, query: str = "") -> dict[str, Any]:
+        tab, view, claim = _parse_tab(query)
+        status = self.note_client(tab=tab, view=view, claim=claim)
+        if status == "stale":
+            return {
+                "runs": scout_history(),
+                "current": current_scout(),
+                "continue_id": scout_continue_id(),
+                "open_id": "",
+                "focus": "",
+                "tab": "stale",
+            }
+        return {
+            "runs": scout_history(),
+            "current": current_scout(),
+            "continue_id": scout_continue_id(),
+            "open_id": self.consume_open_brief(tab),
+            "focus": self.consume_focus(tab),
+            "tab": "ok",
+        }
 
     def start(self) -> None:
         handler = _make_handler(self)
@@ -197,6 +389,14 @@ class DashboardServer:
         if httpd is not None:
             httpd.shutdown()
             httpd.server_close()
+
+
+def _parse_tab(query: str) -> tuple[str, str, bool]:
+    qs = parse_qs(query or "", keep_blank_values=True)
+    tab = str((qs.get("tab") or [""])[0] or "").strip()
+    view = str((qs.get("view") or [""])[0] or "").strip()
+    claim = str((qs.get("claim") or [""])[0] or "").strip().lower() in {"1", "true", "yes"}
+    return tab, view, claim
 
 
 def _make_handler(server: DashboardServer) -> type[BaseHTTPRequestHandler]:
@@ -271,6 +471,22 @@ def _make_handler(server: DashboardServer) -> type[BaseHTTPRequestHandler]:
             if path == "/api/model/test":
                 live = server.model_status() if server.model_status else None
                 self._send_json(200, server.test_state(live))
+                return
+            if path == "/api/presence":
+                self._send_json(200, server.presence_payload(parsed.query))
+                return
+            if path == "/api/scout":
+                self._send_json(200, server.scout_payload(parsed.query))
+                return
+            if path == "/api/scribe":
+                secrets = server.lock.secrets_open(self._lock_token())
+                self._send_json(200, server.scribe_payload(parsed.query, secrets=secrets))
+                return
+            if path == "/api/scout/current":
+                self._send_json(200, {"current": current_scout()})
+                return
+            if path == "/api/scout/settings":
+                self._send_json(200, public_scout())
                 return
             if path == "/api/account":
                 self._send_json(200, public_account())
@@ -368,6 +584,21 @@ def _make_handler(server: DashboardServer) -> type[BaseHTTPRequestHandler]:
                     return
                 self._send_json(200, public_model_state(live))
                 return
+            if parsed.path == "/api/scout/settings":
+                try:
+                    if not lock_enabled():
+                        self._send_json(400, {"error": "set a lock first"})
+                        return
+                    payload = self._read_json()
+                    if not isinstance(payload, dict):
+                        self._send_json(400, {"error": "Invalid JSON"})
+                        return
+                    saved = update_settings({"scout": payload})
+                except json.JSONDecodeError:
+                    self._send_json(400, {"error": "Invalid JSON"})
+                    return
+                self._send_json(200, public_scout(saved))
+                return
             if parsed.path == "/api/settings":
                 try:
                     payload = self._read_json()
@@ -375,6 +606,10 @@ def _make_handler(server: DashboardServer) -> type[BaseHTTPRequestHandler]:
                         self._send_json(400, {"error": "Invalid JSON"})
                         return
                     previous = load_settings()
+                    if "scout" in payload or "tasks" in payload:
+                        payload = dict(payload)
+                        payload.pop("scout", None)
+                        payload.pop("tasks", None)
                     if "lock" in payload and isinstance(payload.get("lock"), dict):
                         payload = dict(payload)
                         timeout = payload["lock"].get("timeout_sec")
@@ -444,6 +679,136 @@ def _make_handler(server: DashboardServer) -> type[BaseHTTPRequestHandler]:
                 return
             if path.startswith("/api/lock"):
                 self._handle_lock_post(path)
+                return
+            if path == "/api/scout/confirm":
+                try:
+                    payload = self._read_json()
+                    if not isinstance(payload, dict):
+                        self._send_json(400, {"error": "Invalid JSON"})
+                        return
+                except json.JSONDecodeError:
+                    self._send_json(400, {"error": "Invalid JSON"})
+                    return
+                self._send_json(200, {"current": confirm_scout(bool(payload.get("ok")))})
+                return
+            if path == "/api/scout/insert":
+                try:
+                    payload = self._read_json()
+                    if not isinstance(payload, dict):
+                        self._send_json(400, {"error": "Invalid JSON"})
+                        return
+                    run = request_insert(str(payload.get("id") or ""))
+                except json.JSONDecodeError:
+                    self._send_json(400, {"error": "Invalid JSON"})
+                    return
+                if run is None:
+                    self._send_json(400, {"error": "Nothing to insert."})
+                    return
+                self._send_json(200, {"run": run})
+                return
+            if path == "/api/scout/cancel":
+                self._send_json(200, {"current": cancel_scout()})
+                return
+            if path == "/api/scout/continue":
+                try:
+                    payload = self._read_json()
+                    if not isinstance(payload, dict):
+                        self._send_json(400, {"error": "Invalid JSON"})
+                        return
+                    wanted = str(payload.get("id") or "")
+                    cont = set_scout_continue(wanted)
+                except json.JSONDecodeError:
+                    self._send_json(400, {"error": "Invalid JSON"})
+                    return
+                if wanted.strip() and not cont:
+                    self._send_json(400, {"error": "Could not continue that brief."})
+                    return
+                self._send_json(200, {"continue_id": cont, "current": current_scout(), "runs": scout_history()})
+                return
+            if path == "/api/scout/delete":
+                try:
+                    payload = self._read_json()
+                    if not isinstance(payload, dict):
+                        self._send_json(400, {"error": "Invalid JSON"})
+                        return
+                    ids = payload.get("ids") or []
+                    if not isinstance(ids, list):
+                        self._send_json(400, {"error": "ids required"})
+                        return
+                except json.JSONDecodeError:
+                    self._send_json(400, {"error": "Invalid JSON"})
+                    return
+                self._send_json(200, delete_scouts([str(item) for item in ids]))
+                return
+            if path == "/api/scout/title":
+                try:
+                    payload = self._read_json()
+                    if not isinstance(payload, dict):
+                        self._send_json(400, {"error": "Invalid JSON"})
+                        return
+                    run = rename_scout(str(payload.get("id") or ""), str(payload.get("title") or ""))
+                except json.JSONDecodeError:
+                    self._send_json(400, {"error": "Invalid JSON"})
+                    return
+                if run is None:
+                    self._send_json(400, {"error": "Could not rename that brief."})
+                    return
+                self._send_json(200, {"run": run})
+                return
+            if path == "/api/scout/key":
+                try:
+                    payload = self._read_json()
+                    if not isinstance(payload, dict):
+                        self._send_json(400, {"error": "Invalid JSON"})
+                        return
+                    if not lock_enabled():
+                        self._send_json(400, {"error": "set a lock first"})
+                        return
+                    try:
+                        server.lock.require_confirm(self._lock_token())
+                    except LockError as exc:
+                        self._send_lock_error(exc)
+                        return
+                    provider = str(
+                        payload.get("provider")
+                        or (load_settings().get("scout") or {}).get("provider")
+                        or ""
+                    )
+                    set_scout_key(provider, str(payload.get("key") or ""))
+                except KeychainError as exc:
+                    self._send_json(400, {"error": str(exc)})
+                    return
+                except json.JSONDecodeError:
+                    self._send_json(400, {"error": "Invalid JSON"})
+                    return
+                self._send_json(200, public_scout())
+                return
+            if path == "/api/scribe":
+                try:
+                    payload = self._read_json()
+                    if not isinstance(payload, dict):
+                        self._send_json(400, {"error": "Invalid JSON"})
+                        return
+                    text = str(payload.get("text") or "").strip()
+                    if (
+                        text
+                        and not payload.get("id")
+                        and not payload.get("due_at")
+                        and "is_todo" not in payload
+                        and "is_reminder" not in payload
+                    ):
+                        note = create_from_text(text)
+                    else:
+                        note = upsert_vocanote(payload, parse_text=text or None)
+                except LibraryError as exc:
+                    self._send_json(400, {"error": str(exc), "errors": exc.errors})
+                    return
+                except json.JSONDecodeError:
+                    self._send_json(400, {"error": "Invalid JSON"})
+                    return
+                secrets = server.lock.secrets_open(self._lock_token())
+                self._send_json(200, {"item": note, "items": list_vocanotes(secrets=secrets)})
+                _push_in_background()
                 return
             if path == "/api/model/test":
                 try:
@@ -557,6 +922,63 @@ def _make_handler(server: DashboardServer) -> type[BaseHTTPRequestHandler]:
             except SyncError as exc:
                 self._send_json(400, {"error": exc.message, "details": exc.details, "kind": exc.kind})
 
+        def do_PATCH(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            path = parsed.path
+            if path.startswith("/api/") and not self._allow_api("PATCH", path):
+                return
+            if path != "/api/scribe":
+                self._send_json(404, {"error": "Not found"})
+                return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict):
+                    self._send_json(400, {"error": "Invalid JSON"})
+                    return
+                ident = str(payload.get("id") or "").strip()
+                if payload.get("dismiss"):
+                    note = dismiss_vocanote(ident)
+                    if note is None:
+                        self._send_json(404, {"error": "Not found"})
+                        return
+                else:
+                    note = upsert_vocanote(payload)
+            except LibraryError as exc:
+                self._send_json(400, {"error": str(exc), "errors": exc.errors})
+                return
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON"})
+                return
+            secrets = server.lock.secrets_open(self._lock_token())
+            self._send_json(200, {"item": note, "items": list_vocanotes(secrets=secrets)})
+            _push_in_background()
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            path = parsed.path
+            if path.startswith("/api/") and not self._allow_api("DELETE", path):
+                return
+            if path != "/api/scribe":
+                self._send_json(404, {"error": "Not found"})
+                return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict):
+                    self._send_json(400, {"error": "Invalid JSON"})
+                    return
+                raw_ids = payload.get("ids")
+                if not isinstance(raw_ids, list):
+                    raw_ids = [payload.get("id")]
+                ids = [str(item).strip() for item in raw_ids if str(item or "").strip()]
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON"})
+                return
+            result = delete_vocanotes(ids)
+            if not server.lock.secrets_open(self._lock_token()):
+                result = {"ok": True, "items": list_vocanotes(secrets=False)}
+            self._send_json(200, result)
+            _push_in_background()
+
         def _handle_lock_post(self, path: str) -> None:
             token = self._lock_token()
             try:
@@ -570,7 +992,7 @@ def _make_handler(server: DashboardServer) -> type[BaseHTTPRequestHandler]:
                     self._send_json(200, {**data, "token": cookie}, cookies=[set_cookie_header(cookie)])
                     return
                 if path == "/api/lock/disable":
-                    data = server.lock.disable(token)
+                    data = server.lock.disable(token, str(body.get("pin") or ""))
                     self._send_json(200, data, cookies=[clear_cookie_header()])
                     return
                 if path == "/api/lock/unlock":
