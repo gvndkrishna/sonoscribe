@@ -17,3 +17,15 @@ build/
 .python-version
 huggingface/
 .cache/
+
+.env
+.env.*
+*.pem
+*.p12
+*.key
+
+library.json
+stats.json
+settings.json
+scout.json
+RELEASE_NOTES.md
